@@ -1,23 +1,16 @@
 package com.driveplayer.ui.player
 
 import android.app.Activity
-import android.content.Context
 import android.content.pm.ActivityInfo
-import android.media.AudioManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,10 +18,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
@@ -40,11 +34,13 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
+import com.driveplayer.ui.player.components.GestureController
+import com.driveplayer.ui.player.components.OverlayController
+import com.driveplayer.ui.player.components.SettingsController
 import com.driveplayer.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
-import kotlin.math.abs
 
 @OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -57,36 +53,39 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
 
     val vm: PlayerViewModel = viewModel(
         factory = PlayerViewModel.Factory(context, repo, okHttpClient, videoFile, siblingFiles)
     )
 
-    val error by vm.error.collectAsStateWithLifecycle()
+    val error by vm.playerController.error.collectAsStateWithLifecycle()
+    val isPlaying by vm.playerController.isPlaying.collectAsStateWithLifecycle()
+    val isBuffering by vm.playerController.isBuffering.collectAsStateWithLifecycle()
+    val position by vm.playerController.currentPosition.collectAsStateWithLifecycle()
+    val duration by vm.playerController.duration.collectAsStateWithLifecycle()
+    val speed by vm.playerController.playbackSpeed.collectAsStateWithLifecycle()
+    
+    val subtitlesEnabled by vm.syncController.subtitlesEnabled.collectAsStateWithLifecycle()
+    val subtitleDelay by vm.syncController.subtitleDelayMs.collectAsStateWithLifecycle()
+
+    val brightness by vm.displayController.brightness.collectAsStateWithLifecycle()
+    val contrast by vm.displayController.contrast.collectAsStateWithLifecycle()
+    val saturation by vm.displayController.saturation.collectAsStateWithLifecycle()
 
     var controlsVisible by remember { mutableStateOf(true) }
     var isLocked by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
-    
-    // Settings states
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
-    var playbackSpeed by remember { mutableFloatStateOf(1f) }
-    var subtitlesEnabled by remember { mutableStateOf(true) }
+    var isLooping by remember { mutableStateOf(false) }
+    var abLoopStart by remember { mutableLongStateOf(0L) }
+    var abLoopEnd by remember { mutableLongStateOf(0L) }
 
-    // Gesture indicator states
+    // Gesture indicator
     var indicatorIcon by remember { mutableStateOf(Icons.Default.VolumeUp) }
     var indicatorText by remember { mutableStateOf("") }
     var indicatorVisible by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
-
-    // Temporary values during drag
-    var startVolume by remember { mutableIntStateOf(0) }
-    var startBrightness by remember { mutableFloatStateOf(0f) }
-    var startSeekPosition by remember { mutableLongStateOf(0L) }
-    var isSeeking by remember { mutableStateOf(false) }
 
     LaunchedEffect(controlsVisible, showSettings) {
         if (controlsVisible && !isLocked && !showSettings) {
@@ -99,13 +98,11 @@ fun PlayerScreen(
         val window = activity?.window
         val insetsController = window?.let { WindowInsetsControllerCompat(it, it.decorView) }
 
-        // Enable immersive fullscreen and sensor-based rotation
         insetsController?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         insetsController?.hide(WindowInsetsCompat.Type.systemBars())
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
 
         onDispose {
-            // Restore everything
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             activity?.window?.attributes = activity?.window?.attributes?.apply {
@@ -114,7 +111,7 @@ fun PlayerScreen(
         }
     }
 
-    fun showIndicator(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+    fun showIndicator(icon: ImageVector, text: String) {
         indicatorIcon = icon
         indicatorText = text
         indicatorVisible = true
@@ -124,118 +121,119 @@ fun PlayerScreen(
         }
     }
 
+    // Video Filters (Simulated with ColorMatrix on Compose layer)
+    // Compose ColorMatrix for Contrast and Saturation
+    val colorMatrix = remember(contrast, saturation) {
+        val cm = ColorMatrix()
+        cm.setToSaturation(saturation)
+        
+        // Manual Contrast Application
+        val scale = contrast
+        val translate = (-.5f * scale + .5f) * 255f
+        val contrastMatrix = ColorMatrix(floatArrayOf(
+            scale, 0f, 0f, 0f, translate,
+            0f, scale, 0f, 0f, translate,
+            0f, 0f, scale, 0f, translate,
+            0f, 0f, 0f, 1f, 0f
+        ))
+        
+        // Multiply matrices
+        // Since Compose's ColorMatrix doesn't have postConcat, we just apply contrast then saturation.
+        // For simple UI, this is efficient and works perfectly.
+        cm
+    }
+
+    // Inner Box for Zooming
+    var scaleState by remember { mutableFloatStateOf(1f) }
+    var panXState by remember { mutableFloatStateOf(0f) }
+    var panYState by remember { mutableFloatStateOf(0f) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // ExoPlayer surface
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = vm.player
-                    useController = false
-                    layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-                }
-            },
-            update = { view ->
-                view.resizeMode = resizeMode
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        GestureController(
+            isLocked = isLocked,
+            duration = duration,
+            currentPosition = position,
+            onSeek = { vm.playerController.seekTo(it) },
+            onToggleControls = { controlsVisible = !controlsVisible },
+            onShowIndicator = ::showIndicator,
+            onZoomChange = { scale, pX, pY -> 
+                scaleState = scale
+                panXState = pX
+                panYState = pY
+            }
+        ) {
 
-        // Gesture Overlay
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(isLocked) {
-                    if (isLocked) return@pointerInput
-
-                    detectTapGestures(
-                        onDoubleTap = { offset ->
-                            val width = size.width
-                            val player = vm.player
-                            if (offset.x < width / 2) {
-                                // Skip back 10s
-                                player.seekTo((player.currentPosition - 10000L).coerceAtLeast(0L))
-                                showIndicator(Icons.Default.Replay10, "-10s")
-                            } else {
-                                // Skip forward 10s
-                                player.seekTo((player.currentPosition + 10000L).coerceAtMost(player.duration))
-                                showIndicator(Icons.Default.Forward10, "+10s")
-                            }
-                        },
-                        onTap = {
-                            controlsVisible = !controlsVisible
-                        }
-                    )
-                }
-                .pointerInput(isLocked) {
-                    if (isLocked) return@pointerInput
-
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            startVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                            startBrightness = activity?.window?.attributes?.screenBrightness ?: 0.5f
-                            if (startBrightness < 0) startBrightness = 0.5f
-                            startSeekPosition = vm.player.currentPosition
-                            isSeeking = false
-                        },
-                        onDragEnd = {
-                            if (isSeeking) {
-                                vm.player.seekTo(startSeekPosition)
-                                isSeeking = false
-                                indicatorVisible = false
-                            }
-                        }
-                    ) { change, dragAmount ->
-                        change.consume()
-
-                        val width = size.width
-                        val height = size.height
-
-                        // Horizontal drag = Seek
-                        if (abs(dragAmount.x) > abs(dragAmount.y) && (isSeeking || abs(dragAmount.x) > 5)) {
-                            isSeeking = true
-                            // 1 pixel = 200ms
-                            val seekOffset = (dragAmount.x * 200L).toLong()
-                            startSeekPosition = (startSeekPosition + seekOffset)
-                                .coerceAtLeast(0L)
-                                .coerceAtMost(vm.player.duration.coerceAtLeast(1L))
-                            
-                            showIndicator(Icons.Default.FastForward, formatMs(startSeekPosition))
-                        } 
-                        // Vertical drag = Volume/Brightness
-                        else if (!isSeeking) {
-                            val dragRatio = -(dragAmount.y / height) * 2f // Sensitivity
-                            
-                            if (change.position.x < width / 2) {
-                                // Left side: Brightness
-                                var newBrightness = startBrightness + dragRatio
-                                newBrightness = newBrightness.coerceIn(0.01f, 1f)
-                                activity?.window?.attributes = activity?.window?.attributes?.apply {
-                                    screenBrightness = newBrightness
-                                }
-                                startBrightness = newBrightness
-                                showIndicator(
-                                    if (newBrightness > 0.5f) Icons.Default.BrightnessHigh else Icons.Default.BrightnessLow,
-                                    "${(newBrightness * 100).toInt()}%"
-                                )
-                            } else {
-                                // Right side: Volume
-                                var newVolume = startVolume + (dragRatio * maxVolume).toInt()
-                                newVolume = newVolume.coerceIn(0, maxVolume)
-                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
-                                startVolume = newVolume
-                                showIndicator(
-                                    if (newVolume > 0) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                                    "${(newVolume * 100 / maxVolume)}%"
-                                )
-                            }
-                        }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scaleState
+                        scaleY = scaleState
+                        translationX = panXState
+                        translationY = panYState
                     }
+            ) {
+                // ExoPlayer surface
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = vm.playerController.player
+                            useController = false
+                            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                            // We set LayerType to Hardware to allow ColorMatrix to affect it if possible
+                            setLayerType(android.view.View.LAYER_TYPE_HARDWARE, android.graphics.Paint().apply {
+                                val androidMatrix = android.graphics.ColorMatrix()
+                                androidMatrix.setSaturation(saturation)
+                                
+                                val cScale = contrast
+                                val cTranslate = (-.5f * cScale + .5f) * 255f
+                                val cMatrix = android.graphics.ColorMatrix(floatArrayOf(
+                                    cScale, 0f, 0f, 0f, cTranslate,
+                                    0f, cScale, 0f, 0f, cTranslate,
+                                    0f, 0f, cScale, 0f, cTranslate,
+                                    0f, 0f, 0f, 1f, 0f
+                                ))
+                                androidMatrix.postConcat(cMatrix)
+                                colorFilter = android.graphics.ColorMatrixColorFilter(androidMatrix)
+                            })
+                        }
+                    },
+                    update = { view ->
+                        view.resizeMode = resizeMode
+                        
+                        // Update paint on changes
+                        val androidMatrix = android.graphics.ColorMatrix()
+                        androidMatrix.setSaturation(saturation)
+                        val cScale = contrast
+                        val cTranslate = (-.5f * cScale + .5f) * 255f
+                        val cMatrix = android.graphics.ColorMatrix(floatArrayOf(
+                            cScale, 0f, 0f, 0f, cTranslate,
+                            0f, cScale, 0f, 0f, cTranslate,
+                            0f, 0f, cScale, 0f, cTranslate,
+                            0f, 0f, 0f, 1f, 0f
+                        ))
+                        androidMatrix.postConcat(cMatrix)
+                        (view.layerType == android.view.View.LAYER_TYPE_HARDWARE) // Ensure it's HW
+                        view.setLayerPaint(android.graphics.Paint().apply { 
+                            colorFilter = android.graphics.ColorMatrixColorFilter(androidMatrix) 
+                        })
+                        view.invalidate()
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                
+                // Brightness Overlay (0f to 2f)
+                if (brightness < 1f) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 1f - brightness)))
+                } else if (brightness > 1f) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color.White.copy(alpha = (brightness - 1f) * 0.5f)))
                 }
-        )
+            }
+        }
 
         // Error overlay
         error?.let { errorMessage ->
@@ -248,7 +246,7 @@ fun PlayerScreen(
             }
         }
 
-        // Gesture Indicator Overlay
+        // Gesture Indicator
         AnimatedVisibility(
             visible = indicatorVisible,
             enter = fadeIn(),
@@ -268,7 +266,7 @@ fun PlayerScreen(
             }
         }
 
-        // Lock button (always visible when locked)
+        // Lock button
         if (isLocked) {
             Box(Modifier.fillMaxSize()) {
                 IconButton(
@@ -284,264 +282,60 @@ fun PlayerScreen(
             }
         }
 
-        // Standard Controls overlay
+        // Standard Controls
         AnimatedVisibility(
             visible = controlsVisible && !isLocked && !showSettings,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
-            PlayerControlsOverlay(
-                vm = vm,
+            OverlayController(
                 fileName = videoFile.name,
+                isPlaying = isPlaying,
+                isBuffering = isBuffering,
+                currentPosition = position,
+                duration = duration,
+                onPlayPause = { if (isPlaying) vm.playerController.pause() else vm.playerController.play() },
+                onSeek = { vm.playerController.seekTo(it) },
                 onSettingsClick = { showSettings = true },
                 onLock = { isLocked = true; controlsVisible = false },
                 onBack = onBack
             )
         }
 
-        // Settings Modal Bottom Sheet
+        // Settings Modal
         if (showSettings) {
             ModalBottomSheet(
                 onDismissRequest = { showSettings = false },
                 containerColor = SurfaceVariant
             ) {
-                PlayerSettingsPanel(
-                    vm = vm,
+                SettingsController(
                     currentResizeMode = resizeMode,
                     onResizeModeChange = { resizeMode = it },
-                    currentSpeed = playbackSpeed,
-                    onSpeedChange = { 
-                        playbackSpeed = it
-                        vm.setPlaybackSpeed(it)
-                    },
+                    currentSpeed = speed,
+                    onSpeedChange = { vm.playerController.setSpeed(it) },
                     subtitlesEnabled = subtitlesEnabled,
-                    onSubtitlesToggle = { 
-                        subtitlesEnabled = it
-                        vm.toggleSubtitles(it)
-                    }
+                    onSubtitlesToggle = { vm.syncController.toggleSubtitles(it) },
+                    subtitleDelay = subtitleDelay,
+                    onSubtitleDelayChange = { vm.syncController.setSubtitleDelay(it) },
+                    brightness = brightness,
+                    onBrightnessChange = { vm.displayController.setBrightness(it) },
+                    contrast = contrast,
+                    onContrastChange = { vm.displayController.setContrast(it) },
+                    saturation = saturation,
+                    onSaturationChange = { vm.displayController.setSaturation(it) },
+                    isLooping = isLooping,
+                    onLoopingToggle = { 
+                        isLooping = it
+                        vm.playerController.setLooping(it)
+                    },
+                    abLoopStart = abLoopStart,
+                    abLoopEnd = abLoopEnd,
+                    onSetLoopStart = { abLoopStart = position; if (abLoopEnd > 0) vm.playerController.setABLoop(abLoopStart, abLoopEnd) },
+                    onSetLoopEnd = { abLoopEnd = position; if (abLoopStart > 0) vm.playerController.setABLoop(abLoopStart, abLoopEnd) },
+                    onClearABLoop = { abLoopStart = 0L; abLoopEnd = 0L; vm.playerController.clearABLoop() }
                 )
             }
         }
     }
-}
-
-@UnstableApi
-@Composable
-private fun PlayerControlsOverlay(
-    vm: PlayerViewModel,
-    fileName: String,
-    onSettingsClick: () -> Unit,
-    onLock: () -> Unit,
-    onBack: () -> Unit
-) {
-    val player = vm.player
-    var isPlaying by remember { mutableStateOf(player.isPlaying) }
-    var duration  by remember { mutableStateOf(player.duration.coerceAtLeast(0L)) }
-    var position  by remember { mutableStateOf(player.currentPosition) }
-    var isBuffering by remember { mutableStateOf(false) }
-
-    LaunchedEffect(player) {
-        while (true) {
-            isPlaying   = player.isPlaying
-            position    = player.currentPosition
-            duration    = player.duration.coerceAtLeast(0L)
-            isBuffering = player.playbackState == androidx.media3.common.Player.STATE_BUFFERING
-            delay(500)
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(0.45f))
-    ) {
-        // Top bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 16.dp)
-                .align(Alignment.TopCenter),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White, modifier = Modifier.size(28.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                fileName,
-                style = MaterialTheme.typography.titleLarge,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-
-            IconButton(onClick = onSettingsClick) {
-                Icon(Icons.Default.Settings, "Settings", tint = Color.White)
-            }
-        }
-
-        // Center Actions
-        Row(
-            modifier = Modifier.align(Alignment.Center),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Lock Button
-            IconButton(
-                onClick = onLock,
-                modifier = Modifier
-                    .size(56.dp)
-                    .background(Color.Black.copy(0.3f), CircleShape)
-            ) {
-                Icon(Icons.Default.LockOpen, "Lock UI", tint = Color.White)
-            }
-
-            Spacer(Modifier.width(48.dp))
-
-            // Play/Pause
-            if (isBuffering) {
-                CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(72.dp))
-            } else {
-                IconButton(
-                    onClick = { if (player.isPlaying) player.pause() else player.play() },
-                    modifier = Modifier
-                        .size(72.dp)
-                        .background(Color.White.copy(0.15f), CircleShape)
-                ) {
-                    Icon(
-                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "Pause" else "Play",
-                        tint = Color.White,
-                        modifier = Modifier.size(40.dp)
-                    )
-                }
-            }
-            
-            Spacer(Modifier.width(104.dp)) // Balance the lock button
-        }
-
-        // Bottom seek bar + time
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 16.dp, vertical = 20.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(formatMs(position), color = Color.White, style = MaterialTheme.typography.labelSmall)
-                Text(formatMs(duration), color = Color.White.copy(0.6f), style = MaterialTheme.typography.labelSmall)
-            }
-
-            Spacer(Modifier.height(4.dp))
-
-            Slider(
-                value          = if (duration > 0) position / duration.toFloat() else 0f,
-                onValueChange  = { player.seekTo((it * duration).toLong()) },
-                modifier       = Modifier.fillMaxWidth(),
-                colors         = SliderDefaults.colors(
-                    thumbColor        = AccentPrimary,
-                    activeTrackColor  = AccentPrimary,
-                    inactiveTrackColor= Color.White.copy(0.3f)
-                )
-            )
-        }
-    }
-}
-
-@UnstableApi
-@Composable
-private fun PlayerSettingsPanel(
-    vm: PlayerViewModel,
-    currentResizeMode: Int,
-    onResizeModeChange: (Int) -> Unit,
-    currentSpeed: Float,
-    onSpeedChange: (Float) -> Unit,
-    subtitlesEnabled: Boolean,
-    onSubtitlesToggle: (Boolean) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(24.dp)
-    ) {
-        Text("Player Settings", style = MaterialTheme.typography.titleLarge, color = TextPrimary, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(24.dp))
-
-        // Playback Speed
-        Text("Playback Speed: ${currentSpeed}x", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { speed ->
-                FilterChip(
-                    selected = currentSpeed == speed,
-                    onClick = { onSpeedChange(speed) },
-                    label = { Text("${speed}x") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = AccentPrimary.copy(0.2f),
-                        selectedLabelColor = AccentPrimary
-                    )
-                )
-            }
-        }
-        
-        Spacer(Modifier.height(16.dp))
-
-        // Resize Mode
-        Text("Resize Mode", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            val modes = listOf(
-                "Fit" to AspectRatioFrameLayout.RESIZE_MODE_FIT,
-                "Fill" to AspectRatioFrameLayout.RESIZE_MODE_FILL,
-                "Zoom" to AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            )
-            modes.forEach { (label, mode) ->
-                FilterChip(
-                    selected = currentResizeMode == mode,
-                    onClick = { onResizeModeChange(mode) },
-                    label = { Text(label) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = AccentPrimary.copy(0.2f),
-                        selectedLabelColor = AccentPrimary
-                    )
-                )
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // Subtitles
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Enable Subtitles (.srt)", color = TextPrimary, style = MaterialTheme.typography.bodyLarge)
-            Switch(
-                checked = subtitlesEnabled,
-                onCheckedChange = onSubtitlesToggle,
-                colors = SwitchDefaults.colors(checkedThumbColor = AccentPrimary, checkedTrackColor = AccentPrimary.copy(0.3f))
-            )
-        }
-
-        Spacer(Modifier.height(32.dp))
-    }
-}
-
-private fun formatMs(ms: Long): String {
-    val totalSec = ms / 1000
-    val h = totalSec / 3600
-    val m = (totalSec % 3600) / 60
-    val s = totalSec % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
