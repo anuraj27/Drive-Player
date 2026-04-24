@@ -10,6 +10,8 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
@@ -39,8 +41,19 @@ class PlayerViewModel(
 
     private fun buildPlayer(context: Context): ExoPlayer {
         val dataSourceFactory = DriveDataSourceFactory(okHttpClient)
+        
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                32000, // minBufferMs
+                64000, // maxBufferMs
+                2500,  // bufferForPlaybackMs
+                5000   // bufferForPlaybackAfterRebufferMs
+            ).build()
+
         return ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setLoadControl(loadControl)
+            .setSeekParameters(SeekParameters.NEXT_SYNC)
             .build()
             .also { player ->
                 player.addListener(object : Player.Listener {
@@ -83,6 +96,17 @@ class PlayerViewModel(
             player.setMediaItem(mediaItemBuilder.build())
             player.prepare()
         }
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        player.setPlaybackSpeed(speed)
+    }
+
+    fun toggleSubtitles(enable: Boolean) {
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, !enable)
+            .build()
     }
 
     override fun onCleared() {
