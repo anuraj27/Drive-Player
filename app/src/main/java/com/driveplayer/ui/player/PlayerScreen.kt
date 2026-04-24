@@ -85,12 +85,12 @@ fun PlayerScreen(
         )
 
         // Error overlay
-        if (error != null) {
+        error?.let { errorMessage ->
             Box(Modifier.fillMaxSize().background(Color.Black.copy(0.7f)), Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.ErrorOutline, null, tint = ColorError, modifier = Modifier.size(56.dp))
                     Spacer(Modifier.height(12.dp))
-                    Text(error ?: "", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Text(errorMessage, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
