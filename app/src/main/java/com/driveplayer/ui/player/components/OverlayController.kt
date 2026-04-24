@@ -15,71 +15,119 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.driveplayer.ui.theme.AccentPrimary
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun OverlayController(
     fileName: String,
     isPlaying: Boolean,
     isBuffering: Boolean,
     currentPosition: Long,
+    bufferedPosition: Long,
     duration: Long,
+    isLandscape: Boolean,
+    playbackSpeed: Float,
+    isRotationLocked: Boolean,
     onPlayPause: () -> Unit,
+    onSeekBack: () -> Unit,
+    onSeekForward: () -> Unit,
     onSeek: (Long) -> Unit,
     onSettingsClick: () -> Unit,
+    onRotationLockToggle: () -> Unit,
+    onManualRotate: () -> Unit,
+    onAudioClick: () -> Unit,
+    onSubtitleClick: () -> Unit,
     onLock: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onAspectRatioClick: () -> Unit,
+    onAspectRatioLongClick: () -> Unit
 ) {
+    var sliderPosition by remember { mutableStateOf<Float?>(null) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(0.45f))
+            .background(Color.Black.copy(alpha = 0.45f))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
-        // Top bar
+        // ── Top bar ─────────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 16.dp)
+                .padding(horizontal = 16.dp, vertical = 20.dp)
                 .align(Alignment.TopCenter),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White,
+                    modifier = Modifier.size(26.dp)
+                )
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(12.dp))
             Text(
-                fileName,
-                style = MaterialTheme.typography.titleLarge,
+                text = fileName,
+                style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
-
+            if (playbackSpeed != 1f) {
+                Text(
+                    text = "${playbackSpeed}x",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AccentPrimary,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+            }
+            IconButton(onClick = onSubtitleClick) {
+                Icon(Icons.Default.Subtitles, contentDescription = "Subtitles", tint = Color.White, modifier = Modifier.size(26.dp))
+            }
+            IconButton(onClick = onAudioClick) {
+                Icon(Icons.Default.Audiotrack, contentDescription = "Audio Track", tint = Color.White, modifier = Modifier.size(26.dp))
+            }
             IconButton(onClick = onSettingsClick) {
-                Icon(Icons.Default.Settings, "Settings", tint = Color.White)
+                Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(26.dp))
             }
         }
 
-        // Center Actions
+        IconButton(
+            onClick = onManualRotate,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 16.dp, top = 80.dp)
+        ) {
+            Icon(
+                Icons.Default.ScreenRotation,
+                contentDescription = "Manual Rotate",
+                tint = Color.White,
+                modifier = Modifier.size(26.dp)
+            )
+        }
+
+        // ── Center controls: [Skip -10s] [Play/Pause] [Skip +10s] ───────────
         Row(
             modifier = Modifier.align(Alignment.Center),
-            horizontalArrangement = Arrangement.Center,
+            horizontalArrangement = Arrangement.spacedBy(36.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Lock Button
             IconButton(
-                onClick = onLock,
+                onClick = onSeekBack,
                 modifier = Modifier
-                    .size(56.dp)
-                    .background(Color.Black.copy(0.3f), CircleShape)
+                    .size(54.dp)
+                    .background(Color.White.copy(0.1f), CircleShape)
             ) {
-                Icon(Icons.Default.LockOpen, "Lock UI", tint = Color.White)
+                Icon(Icons.Default.Replay10, contentDescription = "Skip back 10s", tint = Color.White, modifier = Modifier.size(30.dp))
             }
 
-            Spacer(Modifier.width(48.dp))
-
-            // Play/Pause
             if (isBuffering) {
                 CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(72.dp))
             } else {
@@ -87,47 +135,129 @@ fun OverlayController(
                     onClick = onPlayPause,
                     modifier = Modifier
                         .size(72.dp)
-                        .background(Color.White.copy(0.15f), CircleShape)
+                        .background(Color.White.copy(0.2f), CircleShape)
                 ) {
                     Icon(
-                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
                         tint = Color.White,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(44.dp)
                     )
                 }
             }
-            
-            Spacer(Modifier.width(104.dp)) // Balance the lock button
+
+            IconButton(
+                onClick = onSeekForward,
+                modifier = Modifier
+                    .size(54.dp)
+                    .background(Color.White.copy(0.1f), CircleShape)
+            ) {
+                Icon(Icons.Default.Forward10, contentDescription = "Skip forward 10s", tint = Color.White, modifier = Modifier.size(30.dp))
+            }
         }
 
-        // Bottom seek bar + time
+        // ── Bottom controls ──────────────────────────────────────────────────
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
                 .padding(horizontal = 16.dp, vertical = 20.dp)
         ) {
+            // Seekbar row with buffer indicator
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(formatTime(currentPosition), color = Color.White, style = MaterialTheme.typography.labelSmall)
-                Text(formatTime(duration), color = Color.White.copy(0.6f), style = MaterialTheme.typography.labelSmall)
+                val displayPosition = sliderPosition?.let { (it * duration).toLong() } ?: currentPosition
+
+                Text(
+                    text = formatTime(displayPosition),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(Modifier.width(12.dp))
+
+                // Seekbar + buffer track layered together
+                Box(modifier = Modifier.weight(1f)) {
+                    // Buffer indicator sits below the slider track
+                    LinearProgressIndicator(
+                        progress = { if (duration > 0) (bufferedPosition / duration.toFloat()).coerceIn(0f, 1f) else 0f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .padding(horizontal = 10.dp)
+                            .align(Alignment.Center),
+                        color = Color.White.copy(alpha = 0.4f),
+                        trackColor = Color.White.copy(alpha = 0.15f)
+                    )
+                    Slider(
+                        value = sliderPosition ?: if (duration > 0) currentPosition / duration.toFloat() else 0f,
+                        onValueChange = { sliderPosition = it },
+                        onValueChangeFinished = {
+                            sliderPosition?.let { onSeek((it * duration).toLong()) }
+                            sliderPosition = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = AccentPrimary,
+                            activeTrackColor = AccentPrimary,
+                            inactiveTrackColor = Color.Transparent
+                        )
+                    )
+                }
+
+                Spacer(Modifier.width(12.dp))
+
+                Text(
+                    text = formatTime(duration),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium
+                )
             }
 
             Spacer(Modifier.height(4.dp))
 
-            Slider(
-                value = if (duration > 0) currentPosition / duration.toFloat() else 0f,
-                onValueChange = { onSeek((it * duration).toLong()) },
+            // Icon button row: [Lock | RotationLock] ←→ []
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                colors = SliderDefaults.colors(
-                    thumbColor = AccentPrimary,
-                    activeTrackColor = AccentPrimary,
-                    inactiveTrackColor = Color.White.copy(0.3f)
-                )
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row {
+                    IconButton(onClick = onLock) {
+                        Icon(Icons.Default.LockOpen, contentDescription = "Lock", tint = Color.White)
+                    }
+                    IconButton(onClick = onRotationLockToggle) {
+                        val lockIcon = if (isRotationLocked) {
+                            if (isLandscape) Icons.Default.ScreenLockLandscape else Icons.Default.ScreenLockPortrait
+                        } else {
+                            Icons.Default.Autorenew
+                        }
+                        Icon(
+                            lockIcon,
+                            contentDescription = "Toggle Rotation Lock",
+                            tint = Color.White
+                        )
+                    }
+                }
+                Row {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                onClick = onAspectRatioClick,
+                                onLongClick = onAspectRatioLongClick
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White)
+                    }
+                }
+            }
         }
     }
 }

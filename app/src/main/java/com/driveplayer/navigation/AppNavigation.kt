@@ -1,78 +1,104 @@
 package com.driveplayer.navigation
 
 import androidx.compose.runtime.*
-import androidx.compose.ui.platform.LocalContext
 import androidx.media3.common.util.UnstableApi
+import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
+import com.driveplayer.data.remote.DriveRepository
 import com.driveplayer.di.AppModule
-import com.driveplayer.ui.browser.FileBrowserScreen
-import com.driveplayer.ui.login.LoginScreen
+import com.driveplayer.ui.cloud.CloudScreen
+import com.driveplayer.ui.home.HomeScreen
+import com.driveplayer.ui.home.HomeTab
+import com.driveplayer.ui.local.LocalBrowserScreen
 import com.driveplayer.ui.player.PlayerScreen
+import okhttp3.OkHttpClient
 
 /**
- * Simple manual navigation — no NavHost/NavGraph.
+ * Top-level navigation.
  *
- * Decision: Using sealed class state instead of Compose Navigation for this app.
- * Reasons:
- *  1. We need to pass complex objects (DriveFile, List<DriveFile>, OkHttpClient) between screens.
- *     NavHost requires everything to be serializable Strings — ugly workarounds.
- *  2. Three screens with simple linear flow don't justify NavGraph complexity.
- *  3. Back press is handled manually with BackHandler in each screen.
+ * Flow:
+ *   HomeScreen (Local | Cloud tabs)
+ *     └─ Local → LocalBrowserScreen → PlayerScreen
+ *     └─ Cloud → CloudScreen (connect/browse) → PlayerScreen
+ *
+ * Sealed class navigation because we pass non-serializable objects
+ * (OkHttpClient, DriveRepository) between screens.
  */
 @UnstableApi
 sealed class Screen {
-    object Login : Screen()
-    data class Browser(val accessToken: String) : Screen()
-    data class Player(
+    object Home : Screen()
+
+    /** Playing a local device video */
+    data class LocalPlayer(val video: LocalVideo) : Screen()
+
+    /** Playing a Google Drive video */
+    data class CloudPlayer(
         val videoFile: DriveFile,
         val siblingFiles: List<DriveFile>,
-        val accessToken: String,
+        val repo: DriveRepository,
+        val okHttpClient: OkHttpClient,
     ) : Screen()
 }
 
 @UnstableApi
 @Composable
 fun AppNavigation() {
-    var currentScreen by remember { mutableStateOf<Screen>(Screen.Login) }
+    var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
+
+    // Persist the active tab across navigations so back returns to the correct tab
+    var activeTab by remember { mutableStateOf(HomeTab.LOCAL) }
+
+    // Increments every time a video is opened — ensures a fresh ViewModel even for the same video
+    var playerSession by remember { mutableIntStateOf(0) }
 
     when (val screen = currentScreen) {
-        is Screen.Login -> {
-            LoginScreen(
-                onLoginSuccess = { token ->
-                    currentScreen = Screen.Browser(accessToken = token)
+        is Screen.Home -> {
+            HomeScreen(
+                initialTab = activeTab,
+                onTabChanged = { activeTab = it },
+                localContent = {
+                    LocalBrowserScreen(
+                        localRepo = AppModule.localVideoRepository,
+                        onVideoClick = { video ->
+                            activeTab = HomeTab.LOCAL
+                            playerSession++
+                            currentScreen = Screen.LocalPlayer(video)
+                        }
+                    )
+                },
+                cloudContent = {
+                    CloudScreen(
+                        onVideoClick = { file, siblings, repo, client ->
+                            activeTab = HomeTab.CLOUD
+                            playerSession++
+                            currentScreen = Screen.CloudPlayer(
+                                videoFile = file,
+                                siblingFiles = siblings,
+                                repo = repo,
+                                okHttpClient = client,
+                            )
+                        }
+                    )
                 }
             )
         }
 
-        is Screen.Browser -> {
-            val repo   = remember(screen.accessToken) { AppModule.buildDriveRepository(screen.accessToken) }
-            val client = remember(screen.accessToken) { AppModule.buildOkHttpClient(screen.accessToken) }
-
-            FileBrowserScreen(
-                repo        = repo,
-                accessToken = screen.accessToken,
-                onVideoClick = { file, siblings ->
-                    // siblings = all files in the current folder (for SRT auto-detection)
-                    currentScreen = Screen.Player(
-                        videoFile    = file,
-                        siblingFiles = siblings,
-                        accessToken  = screen.accessToken
-                    )
-                },
-                onSignOut = { currentScreen = Screen.Login }
+        is Screen.LocalPlayer -> {
+            PlayerScreen(
+                localVideo = screen.video,
+                playerKey = "player_$playerSession",
+                onBack = { currentScreen = Screen.Home }
             )
         }
 
-        is Screen.Player -> {
-            val repo   = remember(screen.accessToken) { AppModule.buildDriveRepository(screen.accessToken) }
-            val client = remember(screen.accessToken) { AppModule.buildOkHttpClient(screen.accessToken) }
-
+        is Screen.CloudPlayer -> {
             PlayerScreen(
-                videoFile    = screen.videoFile,
+                videoFile = screen.videoFile,
                 siblingFiles = screen.siblingFiles,
-                repo         = repo,
-                okHttpClient = client,
-                onBack       = { currentScreen = Screen.Browser(screen.accessToken) }
+                repo = screen.repo,
+                okHttpClient = screen.okHttpClient,
+                playerKey = "player_$playerSession",
+                onBack = { currentScreen = Screen.Home }
             )
         }
     }

@@ -2,12 +2,14 @@ package com.driveplayer.di
 
 import android.content.Context
 import com.driveplayer.data.auth.GoogleSignInHelper
+import com.driveplayer.data.local.LocalVideoRepository
 import com.driveplayer.data.remote.DriveApiService
 import com.driveplayer.data.remote.DriveRepository
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
+import com.driveplayer.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -28,6 +30,10 @@ object AppModule {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+    }
+
+    val localVideoRepository: LocalVideoRepository by lazy {
+        LocalVideoRepository(appContext)
     }
 
     val googleSignInClient: GoogleSignInClient by lazy {
@@ -55,9 +61,11 @@ object AppModule {
                     .build()
                 chain.proceed(req)
             }
-            .addInterceptor(
-                HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
-            )
+            .apply {
+                if (BuildConfig.DEBUG) addInterceptor(
+                    HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+                )
+            }
             .build()
 
     fun buildDriveRepository(accessToken: String): DriveRepository {
