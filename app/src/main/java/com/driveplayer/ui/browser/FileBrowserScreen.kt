@@ -2,6 +2,7 @@ package com.driveplayer.ui.browser
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.material3.Tab
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,53 +40,72 @@ fun FileBrowserScreen(
 ) {
     val state       by vm.state.collectAsStateWithLifecycle()
     val folderStack by vm.folderStack.collectAsStateWithLifecycle()
+    val tabMode     by vm.tabMode.collectAsStateWithLifecycle()
 
     BackHandler(enabled = folderStack.size > 1) { vm.goBack() }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            vm.currentFolder.name,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (folderStack.size > 1) {
+            Column {
+                TabRow(
+                    selectedTabIndex = if (tabMode == TabMode.MY_DRIVE) 0 else 1,
+                    containerColor = DarkBackground,
+                    contentColor = AccentPrimary
+                ) {
+                    Tab(
+                        selected = tabMode == TabMode.MY_DRIVE,
+                        onClick = { vm.switchTab(TabMode.MY_DRIVE) },
+                        text = { Text("My Drive", fontWeight = if (tabMode == TabMode.MY_DRIVE) FontWeight.Bold else FontWeight.Normal) }
+                    )
+                    Tab(
+                        selected = tabMode == TabMode.SHARED,
+                        onClick = { vm.switchTab(TabMode.SHARED) },
+                        text = { Text("Shared", fontWeight = if (tabMode == TabMode.SHARED) FontWeight.Bold else FontWeight.Normal) }
+                    )
+                }
+                TopAppBar(
+                    title = {
+                        Column {
                             Text(
-                                folderStack.dropLast(1).joinToString(" › ") { it.name },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextMuted,
+                                vm.currentFolder.name,
+                                style = MaterialTheme.typography.titleLarge,
+                                color = TextPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            if (folderStack.size > 1) {
+                                Text(
+                                    folderStack.dropLast(1).joinToString(" › ") { it.name },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                    }
-                },
-                navigationIcon = {
-                    if (folderStack.size > 1) {
-                        IconButton(onClick = { vm.goBack() }) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = TextPrimary
-                            )
+                    },
+                    navigationIcon = {
+                        if (folderStack.size > 1) {
+                            IconButton(onClick = { vm.goBack() }) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = TextPrimary
+                                )
+                            }
                         }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { vm.refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = TextSecondary)
-                    }
-                    IconButton(onClick = onSignOut) {
-                        Icon(Icons.Default.ExitToApp, contentDescription = "Sign Out", tint = TextSecondary)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
-            )
+                    },
+                    actions = {
+                        IconButton(onClick = { vm.refresh() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = TextSecondary)
+                        }
+                        IconButton(onClick = onSignOut) {
+                            Icon(Icons.Default.ExitToApp, contentDescription = "Sign Out", tint = TextSecondary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+                )
+            }
         },
         containerColor = DarkBackground
     ) { padding ->
@@ -183,7 +203,7 @@ private fun FileItem(file: DriveFile, onClick: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (file.formattedSize.isNotEmpty() || file.modifiedTime != null) {
+            if (file.formattedSize.isNotEmpty() || file.modifiedTime != null || file.owners?.isNotEmpty() == true) {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     buildString {
@@ -191,6 +211,10 @@ private fun FileItem(file: DriveFile, onClick: () -> Unit) {
                         if (file.modifiedTime != null) {
                             if (isNotEmpty()) append("  ·  ")
                             append(file.modifiedTime.take(10))
+                        }
+                        if (file.owners?.isNotEmpty() == true) {
+                            if (isNotEmpty()) append("  ·  ")
+                            append("Owner: ${file.owners.first().displayName ?: file.owners.first().emailAddress}")
                         }
                     },
                     style = MaterialTheme.typography.labelSmall,

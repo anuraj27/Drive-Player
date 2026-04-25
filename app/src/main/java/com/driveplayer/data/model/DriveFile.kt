@@ -9,6 +9,7 @@ data class DriveFile(
     @SerializedName("size")         val size: String? = null,
     @SerializedName("modifiedTime") val modifiedTime: String? = null,
     @SerializedName("thumbnailLink")val thumbnailLink: String? = null,
+    @SerializedName("owners")       val owners: List<Owner>? = null,
 ) {
     val isFolder: Boolean get() = mimeType == "application/vnd.google-apps.folder"
     val isVideo: Boolean  get() = mimeType.startsWith("video/")
@@ -29,4 +30,9 @@ data class DriveFile(
 data class DriveFileListResponse(
     @SerializedName("files")         val files: List<DriveFile> = emptyList(),
     @SerializedName("nextPageToken") val nextPageToken: String?  = null,
+)
+
+data class Owner(
+    @SerializedName("displayName") val displayName: String? = null,
+    @SerializedName("emailAddress") val emailAddress: String? = null,
 )

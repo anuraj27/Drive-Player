@@ -3,6 +3,8 @@ package com.driveplayer.ui.player
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -83,13 +85,10 @@ fun PlayerScreen(
         )
     )
 
-    // Stop playback immediately when leaving this screen.
-    // ViewModel.onCleared() is too slow for in-app navigation — audio keeps playing.
+    // Stop audio immediately on screen exit — ViewModel.onCleared() is too slow for in-app nav.
+    // Release is handled by PlayerViewModel.onCleared() to avoid double-release crash.
     DisposableEffect(Unit) {
-        onDispose {
-            vm.playerController.player.stop()
-            vm.playerController.player.release()
-        }
+        onDispose { vm.playerController.player.stop() }
     }
 
     var isLocked by remember { mutableStateOf(false) }
@@ -126,6 +125,10 @@ fun PlayerScreen(
     val contrast        by vm.displayController.contrast.collectAsStateWithLifecycle()
     val saturation      by vm.displayController.saturation.collectAsStateWithLifecycle()
 
+    val subtitleFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { vm.playerController.loadExternalSubtitle(it) } }
+
     // ── UI state ─────────────────────────────────────────────────────────────
     var controlsVisible by remember { mutableStateOf(true) }
     var activeSettingsTab by remember { mutableStateOf<SettingsTab?>(null) }
@@ -150,9 +153,14 @@ fun PlayerScreen(
         coroutineScope.launch { delay(1500); indicatorVisible = false }
     }
 
-    // Do NOT pause video when settings open, as per UX principles.
+    // Resume only if video was already playing before settings opened.
+    var wasPlayingBeforeSettings by remember { mutableStateOf(false) }
     LaunchedEffect(activeSettingsTab) {
-        if (activeSettingsTab == null && !isLocked) vm.playerController.play()
+        if (activeSettingsTab != null) {
+            wasPlayingBeforeSettings = isPlaying
+        } else if (wasPlayingBeforeSettings && !isLocked) {
+            vm.playerController.play()
+        }
     }
 
     // Auto-hide controls only while playing (keeps them visible when paused).
@@ -404,7 +412,17 @@ fun PlayerScreen(
                         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                     }
                 },
-                onAspectRatioLongClick = { activeSettingsTab = SettingsTab.RESIZE }
+                onAspectRatioLongClick = { activeSettingsTab = SettingsTab.RESIZE },
+                onPipClick = {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        controlsVisible = false
+                        val rational = android.util.Rational(16, 9)
+                        val params = android.app.PictureInPictureParams.Builder()
+                            .setAspectRatio(rational)
+                            .build()
+                        activity?.enterPictureInPictureMode(params)
+                    }
+                }
             )
         }
 
@@ -453,7 +471,7 @@ fun PlayerScreen(
                             showIndicator(Icons.Default.Subtitles, "Subtitle: $name")
                         },
                         onLoadExternalSubtitle = {
-                            showIndicator(Icons.Default.Folder, "Load subtitle not implemented")
+                            subtitleFileLauncher.launch(arrayOf("application/x-subrip", "text/plain", "*/*"))
                         },
                         subtitleDelay = subtitleDelay,
                         onSubtitleDelayChange = {

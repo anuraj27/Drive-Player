@@ -17,7 +17,6 @@ import androidx.compose.ui.unit.dp
 import com.driveplayer.ui.theme.AccentPrimary
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -44,7 +43,8 @@ fun OverlayController(
     onLock: () -> Unit,
     onBack: () -> Unit,
     onAspectRatioClick: () -> Unit,
-    onAspectRatioLongClick: () -> Unit
+    onAspectRatioLongClick: () -> Unit,
+    onPipClick: () -> Unit
 ) {
     var sliderPosition by remember { mutableStateOf<Float?>(null) }
 
@@ -88,6 +88,9 @@ fun OverlayController(
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
             }
+            IconButton(onClick = onPipClick) {
+                Icon(Icons.Default.PictureInPictureAlt, contentDescription = "PiP", tint = Color.White, modifier = Modifier.size(26.dp))
+            }
             IconButton(onClick = onSubtitleClick) {
                 Icon(Icons.Default.Subtitles, contentDescription = "Subtitles", tint = Color.White, modifier = Modifier.size(26.dp))
             }
@@ -129,7 +132,17 @@ fun OverlayController(
             }
 
             if (isBuffering) {
-                CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(72.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(72.dp))
+                    if (duration > 0L) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "${(bufferedPosition * 100 / duration).toInt()}%",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
             } else {
                 IconButton(
                     onClick = onPlayPause,

@@ -35,6 +35,14 @@ fun GestureController(
     val context = LocalContext.current
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
+    val systemBrightness = remember {
+        runCatching {
+            android.provider.Settings.System.getFloat(
+                context.contentResolver,
+                android.provider.Settings.System.SCREEN_BRIGHTNESS
+            ) / 255f
+        }.getOrDefault(0.5f)
+    }
 
     // rememberUpdatedState lets gesture lambdas always read the latest values
     // without recreating the pointerInput handler on every recomposition.
@@ -100,7 +108,7 @@ fun GestureController(
                         dragAccumulatorY = 0f
                         startX = offset.x
                         currentVolumeFloat = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
-                        startBrightness = updatedBrightness.takeIf { it > 0f } ?: 0.5f
+                        startBrightness = updatedBrightness.takeIf { it > 0f } ?: systemBrightness
                         startSeekPosition = updatedPosition
                         targetSeekPosition = updatedPosition
                     },
@@ -147,7 +155,10 @@ fun GestureController(
                             } else {
                                 (startSeekPosition + seekOffset).coerceAtLeast(0L)
                             }
-                            onShowIndicator(Icons.Default.FastForward, formatTime(targetSeekPosition))
+                            onShowIndicator(
+                                if (dragAccumulatorX > 0) Icons.Default.FastForward else Icons.Default.FastRewind,
+                                formatTime(targetSeekPosition)
+                            )
                         }
                         GestureType.BRIGHTNESS -> {
                             val dragRatio = -(dragAmount.y / height) * 2f

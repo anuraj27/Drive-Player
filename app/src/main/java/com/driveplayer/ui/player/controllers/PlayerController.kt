@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -79,7 +80,7 @@ class PlayerController(
         }
         player = builder
             .setLoadControl(loadControl)
-            .setSeekParameters(SeekParameters.NEXT_SYNC)
+            .setSeekParameters(SeekParameters.CLOSEST_SYNC)
             .build()
 
         player.addListener(object : Player.Listener {
@@ -113,7 +114,7 @@ class PlayerController(
         })
 
         scope.launch {
-            while (true) {
+            while (isActive) {
                 if (player.isPlaying) {
                     val pos = player.currentPosition
                     _currentPosition.value = pos
@@ -174,6 +175,22 @@ class PlayerController(
             player.prepare()
             player.playWhenReady = true
         }
+    }
+
+    fun loadExternalSubtitle(subtitleUri: Uri) {
+        val position = player.currentPosition
+        val current = player.currentMediaItem ?: return
+        val newItem = current.buildUpon()
+            .setSubtitleConfigurations(listOf(
+                MediaItem.SubtitleConfiguration.Builder(subtitleUri)
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+            ))
+            .build()
+        player.setMediaItem(newItem, position)
+        player.prepare()
+        player.play()
     }
 
     fun play() = player.play()

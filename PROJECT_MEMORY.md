@@ -40,7 +40,7 @@ This file serves as a persistent memory for the AI agent to quickly understand t
 - **Permissions:** Local video browsing requires storage permissions (READ_MEDIA_VIDEO for Android 13+, READ_EXTERNAL_STORAGE for older versions).
 - **Tab Navigation:** Home screen uses tab-based navigation to switch between Local and Cloud sources, maintaining tab state across navigation.
 
-## 📌 Current State (Phase 3)
+## 📌 Current State (Phase 4)
 - ✅ Project Setup & Auth Flow
 - ✅ Google Drive API File Browser
 - ✅ ExoPlayer Streaming implementation
@@ -50,3 +50,9 @@ This file serves as a persistent memory for the AI agent to quickly understand t
 - ✅ Playback Position Persistence
 - ✅ Player Settings Panel (audio, subtitle, display)
 - ✅ App Icon
+- ✅ Picture-in-Picture (PiP) mode — button in overlay, 16:9 aspect ratio
+- ✅ Buffering % indicator — shown below spinner during buffering
+- ✅ External subtitle loading — file picker for local .srt files
+- ✅ Seek direction icon — FastRewind/FastForward based on drag direction
+- ✅ Polling loop — while(isActive) with isActive import
+- ⚠️ Audio/subtitle delay — stubs only; real impl needs custom AudioProcessor

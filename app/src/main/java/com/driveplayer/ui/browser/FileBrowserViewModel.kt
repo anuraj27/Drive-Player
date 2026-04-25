@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
+enum class TabMode { MY_DRIVE, SHARED }
+
 sealed class BrowserState {
     object Loading : BrowserState()
     data class Success(val files: List<DriveFile>) : BrowserState()
@@ -22,6 +24,9 @@ class FileBrowserViewModel(private val repo: DriveRepository) : ViewModel() {
     private val _state = MutableStateFlow<BrowserState>(BrowserState.Loading)
     val state: StateFlow<BrowserState> = _state
 
+    private val _tabMode = MutableStateFlow(TabMode.MY_DRIVE)
+    val tabMode: StateFlow<TabMode> = _tabMode
+
     // Back-stack of folders for navigation
     private val _folderStack = MutableStateFlow<List<FolderEntry>>(
         listOf(FolderEntry(null, "My Drive"))
@@ -32,6 +37,16 @@ class FileBrowserViewModel(private val repo: DriveRepository) : ViewModel() {
         get() = _folderStack.value.last()
 
     init { loadCurrentFolder() }
+
+    fun switchTab(mode: TabMode) {
+        if (_tabMode.value == mode) return
+        _tabMode.value = mode
+        _folderStack.value = listOf(
+            if (mode == TabMode.MY_DRIVE) FolderEntry(null, "My Drive")
+            else FolderEntry(null, "Shared with me")
+        )
+        loadCurrentFolder()
+    }
 
     fun openFolder(folder: DriveFile) {
         _folderStack.value = _folderStack.value + FolderEntry(folder.id, folder.name)
@@ -52,9 +67,15 @@ class FileBrowserViewModel(private val repo: DriveRepository) : ViewModel() {
     private fun loadCurrentFolder() {
         _state.value = BrowserState.Loading
         viewModelScope.launch {
-            repo.listFolder(currentFolder.id)
-                .onSuccess { _state.value = BrowserState.Success(it) }
-                .onFailure { _state.value = BrowserState.Error(it.message ?: "Unknown error") }
+            if (_tabMode.value == TabMode.MY_DRIVE) {
+                repo.listFolder(currentFolder.id)
+                    .onSuccess { _state.value = BrowserState.Success(it) }
+                    .onFailure { _state.value = BrowserState.Error(it.message ?: "Unknown error") }
+            } else {
+                repo.getSharedFiles()
+                    .onSuccess { _state.value = BrowserState.Success(it) }
+                    .onFailure { _state.value = BrowserState.Error(it.message ?: "Unknown error") }
+            }
         }
     }
 
