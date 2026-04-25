@@ -66,8 +66,8 @@ class PlayerController(
     val abLoopEnd: StateFlow<Long> = _abLoopEnd
 
     private var isLoopingSegment = false
-    private var loopStartMs = 0L
-    private var loopEndMs = 0L
+    @Volatile private var loopStartMs = 0L
+    @Volatile private var loopEndMs = 0L
 
     init {
         val loadControl = DefaultLoadControl.Builder()
@@ -114,12 +114,16 @@ class PlayerController(
         })
 
         scope.launch {
+            var lastSaveMs = 0L
             while (isActive) {
                 if (player.isPlaying) {
                     val pos = player.currentPosition
                     _currentPosition.value = pos
                     _bufferedPosition.value = player.bufferedPosition
-                    currentVideoFile?.let { positionStore.save(it.id, pos) }
+                    if (pos - lastSaveMs >= 5_000L) {
+                        currentVideoFile?.let { positionStore.save(it.id, pos) }
+                        lastSaveMs = pos
+                    }
                     if (isLoopingSegment && loopEndMs > 0 && pos >= loopEndMs) {
                         player.seekTo(loopStartMs)
                     }

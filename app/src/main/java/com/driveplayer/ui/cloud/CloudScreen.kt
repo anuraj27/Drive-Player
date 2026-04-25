@@ -60,10 +60,8 @@ fun CloudScreen(
     val signInIntent = remember(targetAccountEmail) {
         val email = targetAccountEmail
         if (email != null) {
-            println("DEBUG: Creating sign-in intent for target account: $email")
             AppModule.googleSignInHelper.signInIntentForAccount(email)
         } else {
-            println("DEBUG: Creating general sign-in intent (no target account)")
             AppModule.googleSignInHelper.signInIntent()
         }
     }

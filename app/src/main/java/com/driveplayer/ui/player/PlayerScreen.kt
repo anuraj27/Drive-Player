@@ -76,7 +76,7 @@ fun PlayerScreen(
     val vm: PlayerViewModel = viewModel(
         key = playerKey,
         factory = PlayerViewModel.Factory(
-            context = context,
+            context = context.applicationContext,
             repo = repo,
             okHttpClient = okHttpClient,
             videoFile = videoFile,
@@ -292,6 +292,7 @@ fun PlayerScreen(
                         PlayerView(ctx).apply {
                             player = vm.playerController.player
                             useController = false
+                            keepScreenOn = true
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
                             setLayerType(android.view.View.LAYER_TYPE_HARDWARE, videoFilterPaint)
                         }
@@ -416,11 +417,13 @@ fun PlayerScreen(
                 onPipClick = {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                         controlsVisible = false
-                        val rational = android.util.Rational(16, 9)
-                        val params = android.app.PictureInPictureParams.Builder()
-                            .setAspectRatio(rational)
-                            .build()
-                        activity?.enterPictureInPictureMode(params)
+                        try {
+                            val rational = android.util.Rational(16, 9)
+                            val params = android.app.PictureInPictureParams.Builder()
+                                .setAspectRatio(rational)
+                                .build()
+                            activity?.enterPictureInPictureMode(params)
+                        } catch (_: Exception) {}
                     }
                 }
             )
