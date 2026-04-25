@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization") version "1.9.22"
 }
 
 android {
@@ -76,6 +77,10 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+
+    // DataStore for persistent storage
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")

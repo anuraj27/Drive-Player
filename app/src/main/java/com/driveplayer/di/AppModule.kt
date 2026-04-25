@@ -26,11 +26,13 @@ private const val DRIVE_BASE_URL = "https://www.googleapis.com/"
  */
 object AppModule {
 
-    private lateinit var appContext: Context
+    private lateinit var _appContext: Context
 
     fun init(context: Context) {
-        appContext = context.applicationContext
+        _appContext = context.applicationContext
     }
+
+    val appContext: Context get() = _appContext
 
     val localVideoRepository: LocalVideoRepository by lazy {
         LocalVideoRepository(appContext)

@@ -5,6 +5,7 @@ import android.content.Intent
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.Dispatchers
@@ -20,12 +21,34 @@ class GoogleSignInHelper(
     private val context: Context,
     private val client: GoogleSignInClient,
 ) {
+    // Cache for account-specific clients to avoid recreating them
+    private val clientCache = mutableMapOf<String, GoogleSignInClient>()
+
     /** Returns the sign-in Intent to launch via ActivityResultLauncher. */
     fun signInIntent(): Intent = client.signInIntent
 
-    /** Checks if a user is already signed in (silent restore on app start). */
+    /**
+     * Sign-in intent pre-targeted at [email]. If that account is still on the device,
+     * Google Play Services skips the account picker entirely.
+     * Uses cached client for faster switching between accounts.
+     */
+    fun signInIntentForAccount(email: String): Intent {
+        val cachedClient = clientCache.getOrPut(email) {
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestEmail()
+                .requestScopes(Scope(DRIVE_SCOPE))
+                .setAccountName(email)
+                .build()
+            GoogleSignIn.getClient(context, gso)
+        }
+        return cachedClient.signInIntent
+    }
+
+    /** Returns the signed-in account only if it already has Drive scope granted. */
     fun currentAccount(): GoogleSignInAccount? =
-        GoogleSignIn.getLastSignedInAccount(context)
+        GoogleSignIn.getLastSignedInAccount(context)?.takeIf {
+            GoogleSignIn.hasPermissions(it, Scope(DRIVE_SCOPE))
+        }
 
     /**
      * Parses the result from the sign-in Intent.
