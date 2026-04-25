@@ -15,7 +15,9 @@ import kotlinx.serialization.Serializable
 data class SavedAccount(
     val email: String,
     val displayName: String?,
-    val id: String
+    val id: String,
+    val accessToken: String? = null,
+    val lastTokenTime: Long? = null
 )
 
 sealed class CloudConnectionState {
@@ -55,23 +57,33 @@ class CloudViewModel : ViewModel() {
     val targetAccountEmail: StateFlow<String?> = _targetAccountEmail
 
     init {
-        // Load saved accounts from persistent storage
+        // Start in Connecting state to avoid flashing the AccountListScreen before silent connect runs
+        _state.value = CloudConnectionState.Connecting
         viewModelScope.launch {
             accountPrefs.savedAccounts.collect { accounts ->
                 _savedAccounts.value = accounts
             }
         }
-        // Try silent restore
         trySilentConnect()
     }
 
     fun trySilentConnect() {
-        val account = helper.currentAccount() ?: return
-        _state.value = CloudConnectionState.Connecting
         viewModelScope.launch {
+            // Prefer the explicitly-tracked active account over getLastSignedInAccount(),
+            // because getLastSignedInAccount() only knows about ONE account at a time.
+            val activeEmail = accountPrefs.getActiveAccount()
+                ?: helper.currentAccount()?.email  // legacy fallback for existing users
+            if (activeEmail == null) {
+                _state.value = CloudConnectionState.Disconnected
+                return@launch
+            }
+            _state.value = CloudConnectionState.Connecting
             try {
-                val token = helper.getAccessToken(account)
-                connectWith(token, account.email ?: "", account.displayName)
+                val savedAccount = accountPrefs.getAccount(activeEmail)
+                // getAccessTokenForEmail uses AccountManager — works for any Google account on
+                // the device without needing an active Sign-In session.
+                val token = helper.getAccessTokenForEmail(activeEmail)
+                connectWith(token, activeEmail, savedAccount?.displayName)
             } catch (e: Exception) {
                 _state.value = CloudConnectionState.Disconnected
             }
@@ -85,13 +97,13 @@ class CloudViewModel : ViewModel() {
     private fun connectWith(token: String, email: String, displayName: String?) {
         val repo = AppModule.buildDriveRepository(token)
         val client = AppModule.buildOkHttpClient(token)
-        
-        // Save account to persistent storage
+
         val newAccount = SavedAccount(email, displayName, email)
         viewModelScope.launch {
             accountPrefs.saveAccount(newAccount)
+            accountPrefs.setActiveAccount(email)
         }
-        
+
         _targetAccountEmail.value = null
         _state.value = CloudConnectionState.Connected(
             accessToken = token,
@@ -103,10 +115,26 @@ class CloudViewModel : ViewModel() {
     }
 
     fun disconnect() {
+        val currentEmail = (state.value as? CloudConnectionState.Connected)?.userEmail
         viewModelScope.launch {
-            runCatching { helper.signOut() }
+            if (currentEmail != null) {
+                accountPrefs.removeAccount(currentEmail)
+            }
+            accountPrefs.setActiveAccount(null)
             _state.value = CloudConnectionState.Disconnected
             _showLogoutDialog.value = false
+        }
+    }
+
+    fun signOutFromAllAccounts() {
+        viewModelScope.launch {
+            try {
+                accountPrefs.clearAllAccounts()
+                helper.signOut()
+            } catch (e: Exception) {
+                // ignore
+            }
+            _state.value = CloudConnectionState.Disconnected
         }
     }
 
@@ -128,11 +156,21 @@ class CloudViewModel : ViewModel() {
 
     fun switchAccount(account: SavedAccount) {
         _showAccountDialog.value = false
-        _targetAccountEmail.value = account.email
+        _state.value = CloudConnectionState.Connecting
         viewModelScope.launch {
-            runCatching { helper.signOut() }
-            _state.value = CloudConnectionState.Disconnected
-            _autoSignIn.value = true
+            try {
+                // Get a fresh token via AccountManager — no need to store or check token age.
+                // This works as long as the Google account is on the device and consent was granted.
+                val token = helper.getAccessTokenForEmail(account.email)
+                connectWith(token, account.email, account.displayName)
+            } catch (e: Exception) {
+                // Consent was revoked or account is not on device — need OAuth flow.
+                // Sign out first so the picker doesn't pre-select the wrong account.
+                try { helper.signOutCurrentClient() } catch (_: Exception) {}
+                _targetAccountEmail.value = account.email
+                _state.value = CloudConnectionState.Disconnected
+                _autoSignIn.value = true
+            }
         }
     }
 
@@ -140,7 +178,9 @@ class CloudViewModel : ViewModel() {
         _showAccountDialog.value = false
         _targetAccountEmail.value = null
         viewModelScope.launch {
-            runCatching { helper.signOut() }
+            // Must sign out before launching the intent, otherwise Google Play Services
+            // pre-selects the current account instead of showing the account picker.
+            try { helper.signOutCurrentClient() } catch (_: Exception) {}
             _state.value = CloudConnectionState.Disconnected
             _autoSignIn.value = true
         }
@@ -153,6 +193,9 @@ class CloudViewModel : ViewModel() {
     fun removeAccount(account: SavedAccount) {
         viewModelScope.launch {
             accountPrefs.removeAccount(account.email)
+            if (accountPrefs.getActiveAccount() == account.email) {
+                accountPrefs.setActiveAccount(null)
+            }
         }
     }
 }

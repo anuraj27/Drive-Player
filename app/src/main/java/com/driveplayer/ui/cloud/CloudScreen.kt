@@ -8,10 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,7 +21,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,9 +33,6 @@ import com.driveplayer.ui.login.LoginViewModel
 import com.driveplayer.ui.theme.*
 import okhttp3.OkHttpClient
 
-/**
- * Cloud screen: shows connect UI if disconnected, or the Drive browser if connected.
- */
 @Composable
 fun CloudScreen(
     onVideoClick: (DriveFile, List<DriveFile>, DriveRepository, OkHttpClient) -> Unit,
@@ -47,16 +40,54 @@ fun CloudScreen(
 ) {
     val connectionState by cloudVm.state.collectAsStateWithLifecycle()
     val savedAccounts by cloudVm.savedAccounts.collectAsStateWithLifecycle()
-    val showAccountDialog by cloudVm.showAccountDialog.collectAsStateWithLifecycle()
     val showLogoutDialog by cloudVm.showLogoutDialog.collectAsStateWithLifecycle()
     val autoSignIn by cloudVm.autoSignIn.collectAsStateWithLifecycle()
     val targetAccountEmail by cloudVm.targetAccountEmail.collectAsStateWithLifecycle()
 
+    // 1. Hoist LoginViewModel & Launcher so they survive screen swaps
+    val loginVm: LoginViewModel = viewModel()
+    val loginState by loginVm.state.collectAsStateWithLifecycle()
+    var hasPerformedSignIn by remember { mutableStateOf(false) }
+
+    LaunchedEffect(loginState) {
+        if (loginState is com.driveplayer.ui.login.LoginState.Success && hasPerformedSignIn) {
+            val success = loginState as com.driveplayer.ui.login.LoginState.Success
+            cloudVm.onSignInSuccess(success.accessToken, success.account.email ?: "", success.account.displayName)
+            hasPerformedSignIn = false
+        }
+    }
+
+    val signInIntent = remember(targetAccountEmail) {
+        val email = targetAccountEmail
+        if (email != null) {
+            println("DEBUG: Creating sign-in intent for target account: $email")
+            AppModule.googleSignInHelper.signInIntentForAccount(email)
+        } else {
+            println("DEBUG: Creating general sign-in intent (no target account)")
+            AppModule.googleSignInHelper.signInIntent()
+        }
+    }
+
+    val signInLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        hasPerformedSignIn = true
+        loginVm.handleSignInResult(result.data)
+        cloudVm.clearAutoSignIn() // Clear it only after result returns
+    }
+
+    LaunchedEffect(autoSignIn) {
+        if (autoSignIn) {
+            signInLauncher.launch(signInIntent)
+        }
+    }
+
     when (val cs = connectionState) {
         is CloudConnectionState.Disconnected -> {
-            // savedAccounts is cleared before any OAuth flow starts, so this branch
-            // only shows when there are genuinely persisted accounts (future: persistent storage).
-            if (savedAccounts.isNotEmpty() && !autoSignIn) {
+            val isAuthenticating = autoSignIn || loginState is com.driveplayer.ui.login.LoginState.Loading
+
+            // 2. Keep the connect screen visible while authenticating
+            if (savedAccounts.isNotEmpty() && !isAuthenticating) {
                 AccountListScreen(
                     accounts = savedAccounts,
                     onAccountClick = { cloudVm.switchAccount(it) },
@@ -64,10 +95,12 @@ fun CloudScreen(
                 )
             } else {
                 ConnectScreen(
-                    onConnected = { token, email, displayName -> cloudVm.onSignInSuccess(token, email, displayName) },
-                    autoSignIn = autoSignIn,
-                    onAutoSignInHandled = { cloudVm.clearAutoSignIn() },
-                    targetAccountEmail = targetAccountEmail
+                    loginState = loginState,
+                    hasPerformedSignIn = hasPerformedSignIn,
+                    onSignInClick = { 
+                        hasPerformedSignIn = true
+                        signInLauncher.launch(signInIntent) 
+                    }
                 )
             }
         }
@@ -91,92 +124,38 @@ fun CloudScreen(
             }
         }
         is CloudConnectionState.Connected -> {
-            Column(Modifier.fillMaxSize()) {
-                UserHeader(
-                    email = cs.userEmail,
-                    displayName = cs.displayName,
-                    onSwitchAccount = { cloudVm.showAccountDialog() },
-                    onDisconnect = { cloudVm.showLogoutDialog() }
-                )
-                FileBrowserScreen(
-                    repo = cs.repo,
-                    accessToken = cs.accessToken,
-                    onVideoClick = { file, siblings -> onVideoClick(file, siblings, cs.repo, cs.okHttpClient) },
-                    onSignOut = { cloudVm.disconnect() }
-                )
-            }
+            FileBrowserScreen(
+                repo = cs.repo,
+                accessToken = cs.accessToken,
+                accountEmail = cs.userEmail,
+                displayName = cs.displayName,
+                savedAccounts = savedAccounts,
+                onSwitchAccount = { cloudVm.switchAccount(it) },
+                onAddAccount = { cloudVm.addNewAccount() },
+                onVideoClick = { file, siblings -> onVideoClick(file, siblings, cs.repo, cs.okHttpClient) },
+                onLogout = { cloudVm.showLogoutDialog() }
+            )
         }
     }
 
-    // Account selection dialog
-    if (showAccountDialog) {
-        AccountSelectionDialog(
-            accounts = savedAccounts,
-            currentEmail = (connectionState as? CloudConnectionState.Connected)?.userEmail,
-            onAccountClick = { cloudVm.switchAccount(it) },
-            onAddAccount = { cloudVm.addNewAccount() },
-            onDismiss = { cloudVm.hideAccountDialog() }
-        )
-    }
-
-    // Logout confirmation dialog
     if (showLogoutDialog) {
+        val currentEmail = (connectionState as? CloudConnectionState.Connected)?.userEmail
+        val currentDisplayName = (connectionState as? CloudConnectionState.Connected)?.displayName
         LogoutConfirmationDialog(
+            email = currentEmail ?: "",
+            displayName = currentDisplayName,
             onConfirm = { cloudVm.disconnect() },
             onDismiss = { cloudVm.hideLogoutDialog() }
         )
     }
 }
 
-/**
- * Connect screen shown when not signed into Google Drive.
- */
 @Composable
 private fun ConnectScreen(
-    onConnected: (String, String, String?) -> Unit,
-    autoSignIn: Boolean = false,
-    onAutoSignInHandled: () -> Unit = {},
-    targetAccountEmail: String? = null
+    loginState: com.driveplayer.ui.login.LoginState,
+    hasPerformedSignIn: Boolean,
+    onSignInClick: () -> Unit
 ) {
-    val loginVm: LoginViewModel = viewModel()
-    val loginState by loginVm.state.collectAsStateWithLifecycle()
-
-    // Guards against stale LoginState.Success from a previous session triggering an
-    // immediate reconnect when the screen re-enters (logout, switch account, etc.)
-    var hasPerformedSignIn by remember { mutableStateOf(false) }
-
-    LaunchedEffect(loginState) {
-        if (loginState is com.driveplayer.ui.login.LoginState.Success && hasPerformedSignIn) {
-            val success = loginState as com.driveplayer.ui.login.LoginState.Success
-            onConnected(success.accessToken, success.account.email ?: "", success.account.displayName)
-        }
-    }
-
-    // Compute once per target; setAccountName skips the picker if account is on device.
-    val signInIntent = remember(targetAccountEmail) {
-        if (targetAccountEmail != null) {
-            AppModule.googleSignInHelper.signInIntentForAccount(targetAccountEmail)
-        } else {
-            AppModule.googleSignInHelper.signInIntent()
-        }
-    }
-
-    val signInLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        hasPerformedSignIn = true
-        loginVm.handleSignInResult(result.data)
-    }
-
-    // Auto-launch sign-in if triggered
-    LaunchedEffect(autoSignIn) {
-        if (autoSignIn) {
-            onAutoSignInHandled()
-            signInLauncher.launch(signInIntent)
-        }
-    }
-
-    // Animated glow
     val infiniteTransition = rememberInfiniteTransition(label = "glow")
     val glowScale by infiniteTransition.animateFloat(
         initialValue = 0.95f, targetValue = 1.05f, label = "scale",
@@ -192,7 +171,6 @@ private fun ConnectScreen(
             .background(DarkBackground),
         contentAlignment = Alignment.Center
     ) {
-        // Background glows
         Box(
             modifier = Modifier
                 .size(250.dp)
@@ -263,71 +241,11 @@ private fun ConnectScreen(
                         )
                         Spacer(Modifier.height(16.dp))
                     }
-                    ConnectButton { signInLauncher.launch(signInIntent) }
+                    ConnectButton { onSignInClick() }
                 }
                 else -> {
-                    ConnectButton { signInLauncher.launch(signInIntent) }
+                    ConnectButton { onSignInClick() }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun UserHeader(
-    email: String,
-    displayName: String?,
-    onSwitchAccount: () -> Unit,
-    onDisconnect: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(CardSurface)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(AccentPrimary),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    (displayName?.firstOrNull() ?: email.firstOrNull())?.uppercaseChar()?.toString() ?: "?",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(
-                    displayName ?: email,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    email,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-        Row {
-            IconButton(onClick = onSwitchAccount) {
-                Icon(Icons.Default.Person, contentDescription = "Switch account", tint = TextSecondary)
-            }
-            IconButton(onClick = onDisconnect) {
-                Icon(Icons.Default.Logout, contentDescription = "Logout", tint = ColorError)
             }
         }
     }
@@ -335,8 +253,8 @@ private fun UserHeader(
 
 @Composable
 private fun AccountListScreen(
-    accounts: List<SavedAccount>,
-    onAccountClick: (SavedAccount) -> Unit,
+    accounts: List<com.driveplayer.ui.cloud.SavedAccount>,
+    onAccountClick: (com.driveplayer.ui.cloud.SavedAccount) -> Unit,
     onAddAccount: () -> Unit
 ) {
     Column(
@@ -379,7 +297,7 @@ private fun AccountListScreen(
 
 @Composable
 private fun AccountListItem(
-    account: SavedAccount,
+    account: com.driveplayer.ui.cloud.SavedAccount,
     onClick: () -> Unit
 ) {
     Row(
@@ -423,55 +341,35 @@ private fun AccountListItem(
 }
 
 @Composable
-private fun AccountSelectionDialog(
-    accounts: List<SavedAccount>,
-    currentEmail: String?,
-    onAccountClick: (SavedAccount) -> Unit,
-    onAddAccount: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Switch account") },
-        text = {
-            Column {
-                accounts.forEach { account ->
-                    AccountListItem(
-                        account = account,
-                        onClick = { onAccountClick(account) }
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-                
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onAddAccount,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Add new account")
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-@Composable
 private fun LogoutConfirmationDialog(
+    email: String,
+    displayName: String?,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val accountName = displayName ?: email
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Logout") },
-        text = { Text("Are you sure you want to logout?") },
+        text = { 
+            Column {
+                Text("Are you sure you want to logout from:")
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    accountName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    email,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("Other accounts will remain logged in.", color = TextSecondary)
+            }
+        },
         confirmButton = {
             TextButton(onClick = onConfirm) {
                 Text("Logout", color = ColorError)

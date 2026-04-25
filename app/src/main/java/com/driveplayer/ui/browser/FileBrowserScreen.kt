@@ -2,13 +2,14 @@ package com.driveplayer.ui.browser
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
-import androidx.compose.material3.Tab
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -17,16 +18,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
+import com.driveplayer.ui.cloud.SavedAccount
 import com.driveplayer.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,35 +36,93 @@ import com.driveplayer.ui.theme.*
 fun FileBrowserScreen(
     repo: DriveRepository,
     accessToken: String,
+    accountEmail: String,
+    displayName: String?,
+    savedAccounts: List<SavedAccount>,
+    onSwitchAccount: (SavedAccount) -> Unit,
+    onAddAccount: () -> Unit,
     onVideoClick: (file: DriveFile, siblings: List<DriveFile>) -> Unit,
-    onSignOut: () -> Unit,
-    vm: FileBrowserViewModel = viewModel(factory = FileBrowserViewModel.Factory(repo))
+    onLogout: () -> Unit,
+    vm: FileBrowserViewModel = viewModel(key = accountEmail, factory = FileBrowserViewModel.Factory(repo))
 ) {
     val state       by vm.state.collectAsStateWithLifecycle()
     val folderStack by vm.folderStack.collectAsStateWithLifecycle()
     val tabMode     by vm.tabMode.collectAsStateWithLifecycle()
+    var showAccountMenu by remember { mutableStateOf(false) }
 
     BackHandler(enabled = folderStack.size > 1) { vm.goBack() }
 
     Scaffold(
         topBar = {
             Column {
-                TabRow(
-                    selectedTabIndex = if (tabMode == TabMode.MY_DRIVE) 0 else 1,
-                    containerColor = DarkBackground,
-                    contentColor = AccentPrimary
+                // Tab row + profile icon on the same line
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(DarkBackground),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Tab(
-                        selected = tabMode == TabMode.MY_DRIVE,
-                        onClick = { vm.switchTab(TabMode.MY_DRIVE) },
-                        text = { Text("My Drive", fontWeight = if (tabMode == TabMode.MY_DRIVE) FontWeight.Bold else FontWeight.Normal) }
-                    )
-                    Tab(
-                        selected = tabMode == TabMode.SHARED,
-                        onClick = { vm.switchTab(TabMode.SHARED) },
-                        text = { Text("Shared", fontWeight = if (tabMode == TabMode.SHARED) FontWeight.Bold else FontWeight.Normal) }
-                    )
+                    TabRow(
+                        modifier = Modifier.weight(1f),
+                        selectedTabIndex = if (tabMode == TabMode.MY_DRIVE) 0 else 1,
+                        containerColor = DarkBackground,
+                        contentColor = AccentPrimary
+                    ) {
+                        Tab(
+                            selected = tabMode == TabMode.MY_DRIVE,
+                            onClick = { vm.switchTab(TabMode.MY_DRIVE) },
+                            text = {
+                                Text(
+                                    "My Drive",
+                                    fontWeight = if (tabMode == TabMode.MY_DRIVE) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        )
+                        Tab(
+                            selected = tabMode == TabMode.SHARED,
+                            onClick = { vm.switchTab(TabMode.SHARED) },
+                            text = {
+                                Text(
+                                    "Shared",
+                                    fontWeight = if (tabMode == TabMode.SHARED) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        )
+                    }
+
+                    // Profile icon — anchors the account dropdown
+                    Box(modifier = Modifier.padding(horizontal = 4.dp)) {
+                        IconButton(onClick = { showAccountMenu = true }) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(AccentPrimary),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    (displayName?.firstOrNull() ?: accountEmail.firstOrNull())
+                                        ?.uppercaseChar()?.toString() ?: "?",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        AccountDropdownMenu(
+                            expanded = showAccountMenu,
+                            onDismiss = { showAccountMenu = false },
+                            currentEmail = accountEmail,
+                            currentDisplayName = displayName,
+                            savedAccounts = savedAccounts,
+                            onSwitchAccount = { showAccountMenu = false; onSwitchAccount(it) },
+                            onAddAccount = { showAccountMenu = false; onAddAccount() },
+                            onLogout = { showAccountMenu = false; onLogout() }
+                        )
+                    }
                 }
+
+                // Folder breadcrumb bar
                 TopAppBar(
                     title = {
                         Column {
@@ -98,9 +158,6 @@ fun FileBrowserScreen(
                     actions = {
                         IconButton(onClick = { vm.refresh() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = TextSecondary)
-                        }
-                        IconButton(onClick = onSignOut) {
-                            Icon(Icons.Default.ExitToApp, contentDescription = "Sign Out", tint = TextSecondary)
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
@@ -164,6 +221,151 @@ fun FileBrowserScreen(
 }
 
 @Composable
+private fun AccountDropdownMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    currentEmail: String,
+    currentDisplayName: String?,
+    savedAccounts: List<SavedAccount>,
+    onSwitchAccount: (SavedAccount) -> Unit,
+    onAddAccount: () -> Unit,
+    onLogout: () -> Unit
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier.width(280.dp)
+    ) {
+        // Active account header (not a button — just shows who's in)
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(AccentPrimary),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    (currentDisplayName?.firstOrNull() ?: currentEmail.firstOrNull())
+                        ?.uppercaseChar()?.toString() ?: "?",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        currentDisplayName ?: currentEmail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = AccentPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Text(
+                    currentEmail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        // Other linked accounts (scrollable if the list is long)
+        val otherAccounts = savedAccounts.filter { it.email != currentEmail }
+        if (otherAccounts.isNotEmpty()) {
+            HorizontalDivider()
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 200.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                otherAccounts.forEach { account ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(AccentSecondary),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        (account.displayName?.firstOrNull() ?: account.email.firstOrNull())
+                                            ?.uppercaseChar()?.toString() ?: "?",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        account.displayName ?: account.email,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        account.email,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        },
+                        onClick = { onSwitchAccount(account) }
+                    )
+                }
+            }
+        }
+
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Add, contentDescription = null, tint = TextSecondary)
+                    Spacer(Modifier.width(12.dp))
+                    Text("Add account", color = TextPrimary)
+                }
+            },
+            onClick = onAddAccount
+        )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Logout, contentDescription = null, tint = ColorError)
+                    Spacer(Modifier.width(12.dp))
+                    Text("Logout", color = ColorError)
+                }
+            },
+            onClick = onLogout
+        )
+    }
+}
+
+@Composable
 private fun FileItem(file: DriveFile, onClick: () -> Unit) {
     val (icon, iconColor) = when {
         file.isFolder -> Icons.Default.Folder to AccentSecondary
@@ -181,7 +383,6 @@ private fun FileItem(file: DriveFile, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Icon badge
         Box(
             modifier = Modifier
                 .size(44.dp)
@@ -234,7 +435,6 @@ private fun FileItem(file: DriveFile, onClick: () -> Unit) {
     }
 }
 
-// Inline BackHandler using the framework's BackHandler composable
 @Composable
 private fun BackHandler(enabled: Boolean, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled = enabled, onBack = onBack)
