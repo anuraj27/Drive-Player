@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import androidx.media3.common.util.UnstableApi
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
@@ -12,40 +11,41 @@ import com.driveplayer.di.AppModule
 import com.driveplayer.ui.player.controllers.DisplayController
 import com.driveplayer.ui.player.controllers.PlayerController
 import com.driveplayer.ui.player.controllers.SyncController
-import okhttp3.OkHttpClient
 
-@UnstableApi
 class PlayerViewModel(
     context: Context,
     repo: DriveRepository?,
-    okHttpClient: OkHttpClient?,
+    accessToken: String?,
     videoFile: DriveFile?,
     siblingFiles: List<DriveFile>,
     localVideo: LocalVideo?,
 ) : ViewModel() {
 
-    val playerController = PlayerController(context, repo, okHttpClient, viewModelScope, AppModule.watchHistoryStore)
-    val syncController = SyncController(playerController.player, viewModelScope)
+    val playerController = PlayerController(
+        context = context,
+        accessToken = accessToken,
+        repo = repo,
+        scope = viewModelScope,
+        watchHistoryStore = AppModule.watchHistoryStore,
+    )
+    val syncController = SyncController(playerController.mediaPlayer, viewModelScope)
     val displayController = DisplayController()
 
     init {
         if (localVideo != null) {
-            // Local video playback — direct URI
             playerController.prepareAndPlayLocal(localVideo)
         } else if (videoFile != null) {
-            // Cloud video playback — Drive stream
             val srtFile = siblingFiles.firstOrNull {
                 it.isSrt && it.name.removeSuffix(".srt").equals(
                     videoFile.name.substringBeforeLast('.'), ignoreCase = true
                 )
             } ?: siblingFiles.firstOrNull { it.isSrt }
-
             playerController.prepareAndPlay(videoFile, srtFile)
         }
     }
 
     override fun onCleared() {
-        playerController.player.stop()
+        syncController.cancel()
         playerController.release()
         super.onCleared()
     }
@@ -54,12 +54,12 @@ class PlayerViewModel(
     class Factory(
         private val context: Context,
         private val repo: DriveRepository?,
-        private val okHttpClient: OkHttpClient?,
+        private val accessToken: String?,
         private val videoFile: DriveFile?,
         private val siblingFiles: List<DriveFile>,
         private val localVideo: LocalVideo? = null,
     ) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>) =
-            PlayerViewModel(context, repo, okHttpClient, videoFile, siblingFiles, localVideo) as T
+            PlayerViewModel(context, repo, accessToken, videoFile, siblingFiles, localVideo) as T
     }
 }

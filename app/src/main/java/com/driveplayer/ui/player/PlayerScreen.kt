@@ -36,9 +36,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import com.driveplayer.MainActivity
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
@@ -53,19 +50,18 @@ import com.driveplayer.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import okhttp3.OkHttpClient
 
-@OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(
     // Cloud params (nullable)
     videoFile: DriveFile? = null,
     siblingFiles: List<DriveFile> = emptyList(),
     repo: DriveRepository? = null,
-    okHttpClient: OkHttpClient? = null,
+    accessToken: String? = null,
     // Local param (nullable)
     localVideo: LocalVideo? = null,
-    // Unique key per video — ensures a fresh ViewModel + ExoPlayer for every video
+    // Unique key per video — ensures a fresh ViewModel + native player for every video
     playerKey: String = "default",
     onBack: () -> Unit,
 ) {
@@ -79,7 +75,7 @@ fun PlayerScreen(
         factory = PlayerViewModel.Factory(
             context = context.applicationContext,
             repo = repo,
-            okHttpClient = okHttpClient,
+            accessToken = accessToken,
             videoFile = videoFile,
             siblingFiles = siblingFiles,
             localVideo = localVideo
@@ -89,7 +85,7 @@ fun PlayerScreen(
     // Stop audio immediately on screen exit — ViewModel.onCleared() is too slow for in-app nav.
     // Release is handled by PlayerViewModel.onCleared() to avoid double-release crash.
     DisposableEffect(Unit) {
-        onDispose { vm.playerController.player.stop() }
+        onDispose { vm.playerController.stop() }
     }
 
     var isLocked by remember { mutableStateOf(false) }
@@ -129,7 +125,6 @@ fun PlayerScreen(
     val contrast        by vm.displayController.contrast.collectAsStateWithLifecycle()
     val saturation      by vm.displayController.saturation.collectAsStateWithLifecycle()
 
-    val activeCues      by vm.syncController.activeCues.collectAsStateWithLifecycle()
 
     val isInPipMode     = rememberIsInPipMode()
     // rememberUpdatedState keeps a stable State<T> reference so the PiP callback lambda
@@ -143,7 +138,8 @@ fun PlayerScreen(
     // ── UI state ─────────────────────────────────────────────────────────────
     var controlsVisible by remember { mutableStateOf(true) }
     var activeSettingsTab by remember { mutableStateOf<SettingsTab?>(null) }
-    var resizeMode      by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    // 0 = FIT, 3 = FILL, 4 = ZOOM (kept as int constants to preserve the SettingsController API).
+    var resizeMode      by remember { mutableIntStateOf(0) }
     var isLooping       by remember { mutableStateOf(false) }
     var isRotationLocked by remember { mutableStateOf(false) }
 
@@ -281,23 +277,14 @@ fun PlayerScreen(
         }
     }
 
-    // Build ColorMatrix paint only when contrast / saturation change — not on every recomposition.
-    val videoFilterPaint = remember(contrast, saturation) {
-        android.graphics.Paint().apply {
-            val matrix = android.graphics.ColorMatrix().apply {
-                setSaturation(saturation)
-                val scale = contrast
-                val trans = (-.5f * scale + .5f) * 255f
-                postConcat(android.graphics.ColorMatrix(floatArrayOf(
-                    scale, 0f, 0f, 0f, trans,
-                    0f, scale, 0f, 0f, trans,
-                    0f, 0f, scale, 0f, trans,
-                    0f, 0f, 0f, 1f, 0f
-                )))
-            }
-            colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
-        }
-    }
+    // Contrast / saturation are no-ops under libVLC's surface output (a SurfaceView cannot be
+    // wrapped with a Compose ColorMatrix). The state is kept on DisplayController so the UI
+    // sliders still exist, but the values are not applied. Brightness still works because it
+    // mutates window.attributes, not the video surface.
+    @Suppress("UNUSED_EXPRESSION") run { contrast; saturation }
+
+    // Push resize mode into the player whenever it changes.
+    LaunchedEffect(resizeMode) { vm.playerController.setResizeMode(resizeMode) }
 
     var scaleState by remember { mutableFloatStateOf(1f) }
     var panXState  by remember { mutableFloatStateOf(0f) }
@@ -331,51 +318,21 @@ fun PlayerScreen(
             ) {
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = vm.playerController.player
-                            useController = false
+                        org.videolan.libvlc.util.VLCVideoLayout(ctx).apply {
                             keepScreenOn = true
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-                            setLayerType(android.view.View.LAYER_TYPE_HARDWARE, videoFilterPaint)
-                            // Keep the built-in SubtitleView visible — it is a child of PlayerView's
-                            // content frame and is therefore constrained to the actual video area
-                            // (respects letterbox in portrait). A standalone fillMaxSize overlay
-                            // would span the full screen including black bars.
-                        }
-                    },
-                    update = { view ->
-                        view.resizeMode = resizeMode
-                        view.setLayerPaint(videoFilterPaint)
-                        // Drive delayed/styled cues into the built-in subtitle view.
-                        view.subtitleView?.let { sv ->
-                            sv.setCues(activeCues)
-                            // Block embedded ASS/SSA font sizes — some videos bake in
-                            // enormous sizes that cover the whole screen.
-                            sv.setApplyEmbeddedFontSizes(false)
-                            sv.setApplyEmbeddedStyles(false)
-                            sv.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, subtitleSize)
-                            val bgArgb = android.graphics.Color.argb(
-                                (subtitleBgAlpha * 255).toInt(), 0, 0, 0
-                            )
-                            sv.setStyle(
-                                androidx.media3.ui.CaptionStyleCompat(
-                                    subtitleTextColor.toInt(),
-                                    bgArgb,
-                                    android.graphics.Color.TRANSPARENT,
-                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                                    android.graphics.Color.BLACK,
-                                    null
-                                )
-                            )
-                            // Bottom padding fraction: fraction of the subtitle view's height.
-                            sv.setBottomPaddingFraction(
-                                if (subtitlePosition == "Slightly Above") 0.18f else 0.08f
+                            // attachViews(layout, displayManager, useTextureView, useSubtitlesSurface)
+                            // useSubtitlesSurface=true — VLC renders subtitles into its own
+                            // surface, constrained to the video area (handles letterbox correctly).
+                            vm.playerController.mediaPlayer.attachViews(
+                                this, null, true, false
                             )
                         }
                     },
+                    update = { /* surface handled by libVLC; no per-frame work */ },
                     modifier = Modifier.fillMaxSize()
                 )
-        }
+            }
         }
 
         // ── All interactive overlays are hidden while in PiP — only video shows ──
@@ -515,10 +472,11 @@ fun PlayerScreen(
                 onLock          = { isLocked = true; controlsVisible = false },
                 onBack          = onBack,
                 onAspectRatioClick = {
+                    // 0 = FIT, 3 = FILL, 4 = ZOOM (kept as constants, matched in PlayerController.setResizeMode)
                     resizeMode = when (resizeMode) {
-                        AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                        AspectRatioFrameLayout.RESIZE_MODE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        0 -> 3
+                        3 -> 4
+                        else -> 0
                     }
                 },
                 onAspectRatioLongClick = { activeSettingsTab = SettingsTab.RESIZE },

@@ -1,23 +1,28 @@
 package com.driveplayer.ui.player.controllers
 
-import androidx.media3.common.C
-import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionOverride
-import androidx.media3.common.Tracks
-import androidx.media3.common.text.Cue
-import androidx.media3.common.text.CueGroup
-import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.Locale
+import org.videolan.libvlc.MediaPlayer
 
-@UnstableApi
-class SyncController(private val player: Player, private val scope: CoroutineScope) {
+/**
+ * Drives audio/subtitle track listings, selection, and per-track delays through libVLC.
+ *
+ * libVLC differences from the previous ExoPlayer implementation:
+ *  - Track IDs are `Int` (not opaque TrackGroup references) — much simpler to wire.
+ *  - Subtitle delay is a native MediaPlayer property (microseconds), no manual coroutine
+ *    queue needed. We just call `setSpuDelay`.
+ *  - Cue interception is gone — VLC renders subtitles directly to its own surface.
+ *  - Subtitle appearance (size/color/bg) is set globally via LibVLC options at construction;
+ *    those sliders no longer mutate state at runtime (kept on the API for UI compatibility).
+ */
+class SyncController(
+    private val mediaPlayer: MediaPlayer,
+    private val scope: CoroutineScope,
+) {
 
     private val _subtitlesEnabled = MutableStateFlow(true)
     val subtitlesEnabled: StateFlow<Boolean> = _subtitlesEnabled
@@ -43,151 +48,117 @@ class SyncController(private val player: Player, private val scope: CoroutineSco
     private val _subtitlePosition = MutableStateFlow("Bottom")
     val subtitlePosition: StateFlow<String> = _subtitlePosition
 
-    private val _subtitleSize = MutableStateFlow(16f)  // SP units — orientation-independent
+    // Kept on the API surface for the existing SubtitlePanel UI — not applied dynamically
+    // under libVLC (would require per-Media options + restart).
+    private val _subtitleSize = MutableStateFlow(16f)
     val subtitleSize: StateFlow<Float> = _subtitleSize
-
-    // Stored as ARGB Long (e.g. 0xFFFFFFFF for white) — toInt() wraps correctly for Android color ints.
     private val _subtitleTextColor = MutableStateFlow(0xFFFFFFFFL)
     val subtitleTextColor: StateFlow<Long> = _subtitleTextColor
-
     private val _subtitleBgAlpha = MutableStateFlow(0.5f)
     val subtitleBgAlpha: StateFlow<Float> = _subtitleBgAlpha
 
-    // Current cues to render — managed by onCues + optional delay coroutine.
-    private val _activeCues = MutableStateFlow<List<Cue>>(emptyList())
-    val activeCues: StateFlow<List<Cue>> = _activeCues
+    // Maps the audio/subtitle track-list index (UI) back to libVLC's track ID (transport).
+    // libVLC's `audioTrack`/`spuTrack` setters expect IDs, not indices.
+    private var audioTrackIds: List<Int> = emptyList()
+    private var subtitleTrackIds: List<Int> = emptyList()
 
-    // Cancels the previous delayed-display job when a new cue or seek arrives.
-    private var pendingCueJob: Job? = null
+    // Periodic refresh — libVLC doesn't fire a "tracks ready" event we can hook reliably,
+    // so we poll until tracks become available, then back off.
+    private var trackRefreshJob: Job? = null
 
     init {
-        player.addListener(object : Player.Listener {
-            override fun onTracksChanged(tracks: Tracks) {
-                refreshAudioTracks(tracks)
-                refreshSubtitleTracks(tracks)
+        trackRefreshJob = scope.launch {
+            while (true) {
+                refreshTracks()
+                // Faster polling at first; slow down once we have tracks.
+                delay(if (_audioTracks.value.isEmpty() && _availableSubtitleTracks.value.isEmpty()) 500L else 2_000L)
             }
+        }
+    }
 
-            override fun onCues(cueGroup: CueGroup) {
-                if (!_subtitlesEnabled.value) return
-                pendingCueJob?.cancel()
-                if (cueGroup.cues.isEmpty()) {
-                    _activeCues.value = emptyList()
-                    return
-                }
-                val delayMs = (_subtitleDelay.value * 1_000f).toLong()
-                if (delayMs <= 0L) {
-                    // No delay — display immediately.
-                    _activeCues.value = cueGroup.cues
-                } else {
-                    // Positive delay: schedule display after delayMs.
-                    // Cancelling pendingCueJob on next cue/seek prevents stale cues surfacing.
-                    pendingCueJob = scope.launch {
-                        delay(delayMs)
-                        if (isActive) _activeCues.value = cueGroup.cues
-                    }
-                }
-            }
-        })
+    private fun refreshTracks() {
+        val audio = mediaPlayer.audioTracks
+        if (audio != null) {
+            // VLC includes a synthetic "Disable" track at id == -1 — filter it out.
+            val real = audio.filter { it.id != -1 }
+            audioTrackIds = real.map { it.id }
+            _audioTracks.value = real.map { it.name ?: "Track" }
+            val currentId = mediaPlayer.audioTrack
+            _selectedAudioTrack.value = audioTrackIds.indexOf(currentId).coerceAtLeast(0)
+        } else {
+            audioTrackIds = emptyList()
+            _audioTracks.value = emptyList()
+        }
+
+        val spu = mediaPlayer.spuTracks
+        if (spu != null) {
+            val real = spu.filter { it.id != -1 }
+            subtitleTrackIds = real.map { it.id }
+            _availableSubtitleTracks.value = real.map { it.name ?: "Subtitle" }
+            val currentId = mediaPlayer.spuTrack
+            _selectedSubtitleTrack.value = subtitleTrackIds.indexOf(currentId)
+        } else {
+            subtitleTrackIds = emptyList()
+            _availableSubtitleTracks.value = emptyList()
+        }
     }
 
     fun toggleSubtitles(enable: Boolean) {
         _subtitlesEnabled.value = enable
-        if (!enable) {
-            pendingCueJob?.cancel()
-            _activeCues.value = emptyList()
+        if (enable) {
+            // Re-select the first available subtitle track (or last selected).
+            val targetIndex = _selectedSubtitleTrack.value.takeIf { it >= 0 } ?: 0
+            if (targetIndex in subtitleTrackIds.indices) {
+                mediaPlayer.spuTrack = subtitleTrackIds[targetIndex]
+                _selectedSubtitleTrack.value = targetIndex
+            }
+        } else {
+            mediaPlayer.spuTrack = -1
+            _selectedSubtitleTrack.value = -1
         }
-        player.trackSelectionParameters = player.trackSelectionParameters
-            .buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enable)
-            .build()
     }
 
     fun selectAudioTrack(index: Int) {
-        val audioGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        if (index !in audioGroups.indices) return
-        player.trackSelectionParameters = player.trackSelectionParameters
-            .buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-            .addOverride(TrackSelectionOverride(audioGroups[index].mediaTrackGroup, 0))
-            .build()
-        _selectedAudioTrack.value = index
+        if (index !in audioTrackIds.indices) return
+        try {
+            mediaPlayer.audioTrack = audioTrackIds[index]
+            _selectedAudioTrack.value = index
+        } catch (_: Exception) {}
     }
 
     fun selectSubtitleTrack(index: Int) {
-        val subtitleGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-        if (index !in subtitleGroups.indices) return
+        if (index !in subtitleTrackIds.indices) return
         try {
-            player.trackSelectionParameters = player.trackSelectionParameters
-                .buildUpon()
-                // Re-enable text tracks in case they were disabled via toggleSubtitles(false)
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                .addOverride(TrackSelectionOverride(subtitleGroups[index].mediaTrackGroup, 0))
-                .build()
+            mediaPlayer.spuTrack = subtitleTrackIds[index]
             _subtitlesEnabled.value = true
             _selectedSubtitleTrack.value = index
         } catch (_: Exception) {
-            // TrackGroup reference became stale between UI render and tap; onTracksChanged will resync
+            // Even if VLC fails to render the track it will not crash the player —
+            // it just falls back to no subtitles.
         }
     }
 
     fun setAudioDelay(delay: Float) {
         _audioDelay.value = delay
+        // libVLC expects microseconds.
+        mediaPlayer.audioDelay = (delay * 1_000_000L).toLong()
     }
 
     fun setSubtitleDelay(delay: Float) {
         _subtitleDelay.value = delay
+        mediaPlayer.spuDelay = (delay * 1_000_000L).toLong()
     }
 
     fun setSubtitlePosition(position: String) {
         _subtitlePosition.value = position
+        // VLC has --sub-margin but it's a global LibVLC option; skip dynamic for now.
     }
 
     fun setSubtitleSize(size: Float) { _subtitleSize.value = size }
     fun setSubtitleTextColor(color: Long) { _subtitleTextColor.value = color }
     fun setSubtitleBgAlpha(alpha: Float) { _subtitleBgAlpha.value = alpha }
 
-    private fun refreshAudioTracks(tracks: Tracks) {
-        val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        _audioTracks.value = groups.mapIndexed { index, group ->
-            val format = group.getTrackFormat(0)
-            buildString {
-                val langName = format.language
-                    ?.let { runCatching { Locale(it).displayLanguage }.getOrNull() }
-                    ?.takeIf { it.isNotBlank() }
-                when {
-                    langName != null -> append(langName)
-                    !format.label.isNullOrBlank() -> append(format.label)
-                    else -> append("Track ${index + 1}")
-                }
-                // Append channel layout and label (e.g. "English · Stereo · Commentary")
-                val channelStr = when (format.channelCount) {
-                    1 -> "Mono"
-                    2 -> "Stereo"
-                    6 -> "5.1"
-                    8 -> "7.1"
-                    else -> if (format.channelCount > 0) "${format.channelCount}ch" else null
-                }
-                val extras = listOfNotNull(
-                    channelStr,
-                    format.label?.takeIf { langName != null && it.isNotBlank() }
-                )
-                if (extras.isNotEmpty()) append(" · ${extras.joinToString(" · ")}")
-            }
-        }
-        _selectedAudioTrack.value = groups.indexOfFirst { it.isSelected }.coerceAtLeast(0)
-    }
-
-    private fun refreshSubtitleTracks(tracks: Tracks) {
-        val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-        _availableSubtitleTracks.value = groups.mapIndexed { index, group ->
-            val format = group.getTrackFormat(0)
-            format.language
-                ?.let { runCatching { Locale(it).displayLanguage }.getOrNull() }
-                ?.takeIf { it.isNotBlank() }
-                ?.let { "$it ${if (format.label != null) "(${format.label})" else ""}".trim() }
-                ?: "Subtitle ${index + 1}"
-        }
-        _selectedSubtitleTrack.value = groups.indexOfFirst { it.isSelected }
+    fun cancel() {
+        trackRefreshJob?.cancel()
     }
 }

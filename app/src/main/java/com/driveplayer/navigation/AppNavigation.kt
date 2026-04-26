@@ -1,7 +1,6 @@
 package com.driveplayer.navigation
 
 import androidx.compose.runtime.*
-import androidx.media3.common.util.UnstableApi
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
@@ -12,18 +11,7 @@ import com.driveplayer.ui.home.HomeScreen
 import com.driveplayer.ui.home.HomeTab
 import com.driveplayer.ui.local.LocalBrowserScreen
 import com.driveplayer.ui.player.PlayerScreen
-import okhttp3.OkHttpClient
 
-/**
- * Top-level navigation.
- *
- * Flow:
- *   HomeScreen (Local | Cloud | Downloads tabs)
- *     └─ Local → LocalBrowserScreen → PlayerScreen
- *     └─ Cloud → CloudScreen (connect/browse) → PlayerScreen
- *     └─ Downloads → DownloadsScreen → PlayerScreen (local URI)
- */
-@UnstableApi
 sealed class Screen {
     object Home : Screen()
 
@@ -33,11 +21,10 @@ sealed class Screen {
         val videoFile: DriveFile,
         val siblingFiles: List<DriveFile>,
         val repo: DriveRepository,
-        val okHttpClient: OkHttpClient,
+        val accessToken: String,
     ) : Screen()
 }
 
-@UnstableApi
 @Composable
 fun AppNavigation() {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
@@ -61,14 +48,14 @@ fun AppNavigation() {
                 },
                 cloudContent = {
                     CloudScreen(
-                        onVideoClick = { file, siblings, repo, client ->
+                        onVideoClick = { file, siblings, repo, accessToken ->
                             activeTab = HomeTab.CLOUD
                             playerSession++
                             currentScreen = Screen.CloudPlayer(
                                 videoFile = file,
                                 siblingFiles = siblings,
                                 repo = repo,
-                                okHttpClient = client,
+                                accessToken = accessToken,
                             )
                         }
                     )
@@ -109,7 +96,7 @@ fun AppNavigation() {
                 videoFile = screen.videoFile,
                 siblingFiles = screen.siblingFiles,
                 repo = screen.repo,
-                okHttpClient = screen.okHttpClient,
+                accessToken = screen.accessToken,
                 playerKey = "player_$playerSession",
                 onBack = { currentScreen = Screen.Home }
             )

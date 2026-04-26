@@ -31,11 +31,10 @@ import com.driveplayer.di.AppModule
 import com.driveplayer.ui.browser.FileBrowserScreen
 import com.driveplayer.ui.login.LoginViewModel
 import com.driveplayer.ui.theme.*
-import okhttp3.OkHttpClient
 
 @Composable
 fun CloudScreen(
-    onVideoClick: (DriveFile, List<DriveFile>, DriveRepository, OkHttpClient) -> Unit,
+    onVideoClick: (DriveFile, List<DriveFile>, DriveRepository, String) -> Unit,
     cloudVm: CloudViewModel = viewModel()
 ) {
     val connectionState by cloudVm.state.collectAsStateWithLifecycle()
@@ -130,7 +129,7 @@ fun CloudScreen(
                 savedAccounts = savedAccounts,
                 onSwitchAccount = { cloudVm.switchAccount(it) },
                 onAddAccount = { cloudVm.addNewAccount() },
-                onVideoClick = { file, siblings -> onVideoClick(file, siblings, cs.repo, cs.okHttpClient) },
+                onVideoClick = { file, siblings -> onVideoClick(file, siblings, cs.repo, cs.accessToken) },
                 onLogout = { cloudVm.showLogoutDialog() }
             )
         }

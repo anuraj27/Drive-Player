@@ -7,12 +7,12 @@ plugins {
 
 android {
     namespace = "com.driveplayer"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.driveplayer"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -68,11 +68,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     debugImplementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-    // ExoPlayer / Media3 (best Android player, native HTTP range requests = seeking without full download)
-    implementation("androidx.media3:media3-exoplayer:1.3.1")
-    implementation("androidx.media3:media3-ui:1.3.1")
-    implementation("androidx.media3:media3-datasource-okhttp:1.3.1")
-    implementation("androidx.media3:media3-common:1.3.1")
+    // libVLC (VLC for Android) — broad codec/subtitle format support including PGS, ASS, etc.
+    // Replaces Media3/ExoPlayer to fix subtitle decoder crashes and match VLC's format coverage.
+    implementation("org.videolan.android:libvlc-all:3.6.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

@@ -9,7 +9,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.media3.ui.AspectRatioFrameLayout
 import com.driveplayer.ui.theme.*
 import kotlin.math.roundToInt
 
@@ -107,9 +106,9 @@ fun SettingsController(
             Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(
-                    "Fit"  to AspectRatioFrameLayout.RESIZE_MODE_FIT,
-                    "Fill" to AspectRatioFrameLayout.RESIZE_MODE_FILL,
-                    "Zoom" to AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    "Fit"  to 0,
+                    "Fill" to 3,
+                    "Zoom" to 4
                 ).forEach { (label, mode) ->
                     FilterChip(
                         selected = currentResizeMode == mode,
