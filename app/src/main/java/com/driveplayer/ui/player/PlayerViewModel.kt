@@ -31,16 +31,26 @@ class PlayerViewModel(
     val syncController = SyncController(playerController.mediaPlayer, viewModelScope)
     val displayController = DisplayController()
 
-    init {
-        if (localVideo != null) {
-            playerController.prepareAndPlayLocal(localVideo)
-        } else if (videoFile != null) {
-            val srtFile = siblingFiles.firstOrNull {
+    // Hold inputs so PlayerScreen can trigger playback AFTER attachViews has run.
+    // Calling play() before the surface is attached causes libVLC's vout to fail
+    // ("can't get Video Surface" / "video output creation failed") and never recover.
+    private val pendingLocalVideo = localVideo
+    private val pendingVideoFile = videoFile
+    private val pendingSiblingFiles = siblingFiles
+
+    @Volatile private var hasStarted = false
+    fun startPlaybackOnce() {
+        if (hasStarted) return
+        hasStarted = true
+        if (pendingLocalVideo != null) {
+            playerController.prepareAndPlayLocal(pendingLocalVideo)
+        } else if (pendingVideoFile != null) {
+            val srtFile = pendingSiblingFiles.firstOrNull {
                 it.isSrt && it.name.removeSuffix(".srt").equals(
-                    videoFile.name.substringBeforeLast('.'), ignoreCase = true
+                    pendingVideoFile.name.substringBeforeLast('.'), ignoreCase = true
                 )
-            } ?: siblingFiles.firstOrNull { it.isSrt }
-            playerController.prepareAndPlay(videoFile, srtFile)
+            } ?: pendingSiblingFiles.firstOrNull { it.isSrt }
+            playerController.prepareAndPlay(pendingVideoFile, srtFile)
         }
     }
 

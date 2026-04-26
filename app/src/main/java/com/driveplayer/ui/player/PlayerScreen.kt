@@ -321,12 +321,16 @@ fun PlayerScreen(
                         org.videolan.libvlc.util.VLCVideoLayout(ctx).apply {
                             keepScreenOn = true
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-                            // attachViews(layout, displayManager, useTextureView, useSubtitlesSurface)
-                            // useSubtitlesSurface=true — VLC renders subtitles into its own
-                            // surface, constrained to the video area (handles letterbox correctly).
+                            // attachViews(layout, displayManager, subtitles, useTextureView).
+                            // subtitles=true — VLC renders subtitles into its own surface,
+                            // constrained to the video area (handles letterbox correctly).
                             vm.playerController.mediaPlayer.attachViews(
                                 this, null, true, false
                             )
+                            // Kick off playback now that the video surface is attached.
+                            // Doing this earlier (in ViewModel.init) starves libVLC's vout
+                            // of a Surface and decoding fails permanently.
+                            vm.startPlaybackOnce()
                         }
                     },
                     update = { /* surface handled by libVLC; no per-frame work */ },

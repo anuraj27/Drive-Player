@@ -41,8 +41,6 @@ class PlayerController(
             // Subtitle defaults — VLC's freetype renderer is much more capable than ExoPlayer's
             "--freetype-rel-fontsize=16",
             "--freetype-outline-thickness=4",
-            // Enable adjust filter so brightness/contrast/saturation can be set later
-            "--video-filter=adjust",
         )
     )
 
@@ -218,25 +216,31 @@ class PlayerController(
         currentLocalPfd?.let { try { it.close() } catch (_: Exception) {} }
         currentLocalPfd = null
 
-        // libVLC cannot open content:// URIs directly; open via ContentResolver and hand it a fd.
-        val pfd = try {
-            context.contentResolver.openFileDescriptor(localVideo.uri, "r")
-        } catch (e: Exception) {
-            _error.value = "Cannot open file: ${e.message}"
-            return
+        // Prefer a real file path: libVLC's fd:// access is non-seekable for some content
+        // providers (manifests as "cannot peek" / "Bad file descriptor"). A direct file
+        // path always gives a seekable stream.
+        val directFile = localVideo.path.takeIf { it.isNotBlank() }?.let { java.io.File(it) }
+        val media: Media = if (directFile != null && directFile.canRead()) {
+            Media(libVlc, directFile.absolutePath)
+        } else {
+            // Fallback: open via ContentResolver and hand libVLC a fd. Keep pfd alive —
+            // libVLC reads it lazily during play().
+            val pfd = try {
+                context.contentResolver.openFileDescriptor(localVideo.uri, "r")
+            } catch (e: Exception) {
+                _error.value = "Cannot open file: ${e.message}"
+                return
+            }
+            if (pfd == null) {
+                _error.value = "Cannot open file"
+                return
+            }
+            currentLocalPfd = pfd
+            Media(libVlc, pfd.fileDescriptor)
         }
-        if (pfd == null) {
-            _error.value = "Cannot open file"
-            return
-        }
-        currentLocalPfd = pfd
-        val media = Media(libVlc, pfd.fileDescriptor).apply {
-            setHWDecoderEnabled(true, false)
-        }
+        media.setHWDecoderEnabled(true, false)
         mediaPlayer.media = media
         media.release()
-        // Don't close pfd here — libVLC reads it lazily during play(). It's closed on next
-        // prepareAndPlayLocal/release().
         mediaPlayer.play()
     }
 
