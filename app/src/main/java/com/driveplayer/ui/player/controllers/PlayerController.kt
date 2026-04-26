@@ -5,6 +5,7 @@ import android.net.Uri
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
+import com.driveplayer.player.DriveAuthProxy
 import com.driveplayer.player.PlaybackPositionStore
 import com.driveplayer.player.WatchEntry
 import com.driveplayer.player.WatchHistoryStore
@@ -53,6 +54,10 @@ class PlayerController(
     // Held open for the lifetime of the current local media — libVLC reads the fd lazily
     // on play(), so closing it eagerly produces "Bad file descriptor".
     private var currentLocalPfd: android.os.ParcelFileDescriptor? = null
+
+    // Localhost proxy that adds the OAuth Bearer header for cloud (Drive) playback.
+    private var currentProxy: DriveAuthProxy? = null
+    private var currentSubProxy: DriveAuthProxy? = null
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
@@ -177,7 +182,11 @@ class PlayerController(
         }
     }
 
-    /** Drive streaming with `?access_token=...` — Drive accepts OAuth tokens as a query param. */
+    /**
+     * Drive streaming via a localhost proxy that injects the OAuth Bearer header.
+     * Drive started rejecting `?access_token=` query params with HTTP 403 for media downloads,
+     * and libVLC has no built-in custom-header support.
+     */
     fun prepareAndPlay(videoFile: DriveFile, subtitleFile: DriveFile?) {
         if (repo == null || accessToken == null) {
             _error.value = "Missing credentials"
@@ -187,8 +196,14 @@ class PlayerController(
         hasSeekedToSavedPosition = false
         lengthKnown = false
 
-        val url = "${repo.streamUrl(videoFile.id)}&access_token=$accessToken"
-        val media = Media(libVlc, Uri.parse(url)).apply {
+        // Tear down any previous proxies before starting new ones.
+        currentProxy?.stop(); currentProxy = null
+        currentSubProxy?.stop(); currentSubProxy = null
+
+        val proxy = DriveAuthProxy(repo.streamUrl(videoFile.id), accessToken).also { it.start() }
+        currentProxy = proxy
+
+        val media = Media(libVlc, Uri.parse("http://127.0.0.1:${proxy.port}/")).apply {
             setHWDecoderEnabled(true, false)
             addOption(":network-caching=1500")
         }
@@ -196,10 +211,11 @@ class PlayerController(
         media.release()
 
         if (subtitleFile != null) {
-            val subUrl = "${repo.srtUrl(subtitleFile.id)}&access_token=$accessToken"
+            val subProxy = DriveAuthProxy(repo.srtUrl(subtitleFile.id), accessToken).also { it.start() }
+            currentSubProxy = subProxy
             mediaPlayer.addSlave(
                 org.videolan.libvlc.interfaces.IMedia.Slave.Type.Subtitle,
-                Uri.parse(subUrl),
+                Uri.parse("http://127.0.0.1:${subProxy.port}/"),
                 true
             )
         }
@@ -334,6 +350,8 @@ class PlayerController(
         libVlc.release()
         currentLocalPfd?.let { try { it.close() } catch (_: Exception) {} }
         currentLocalPfd = null
+        currentProxy?.stop(); currentProxy = null
+        currentSubProxy?.stop(); currentSubProxy = null
     }
 
     fun stop() { mediaPlayer.stop() }
