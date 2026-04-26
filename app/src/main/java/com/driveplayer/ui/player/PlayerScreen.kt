@@ -39,7 +39,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import androidx.media3.ui.SubtitleView
 import com.driveplayer.MainActivity
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
@@ -122,6 +121,9 @@ fun PlayerScreen(
     val audioDelay by vm.syncController.audioDelay.collectAsStateWithLifecycle()
     val subtitleDelay by vm.syncController.subtitleDelay.collectAsStateWithLifecycle()
     val subtitlePosition by vm.syncController.subtitlePosition.collectAsStateWithLifecycle()
+    val subtitleSize by vm.syncController.subtitleSize.collectAsStateWithLifecycle()
+    val subtitleTextColor by vm.syncController.subtitleTextColor.collectAsStateWithLifecycle()
+    val subtitleBgAlpha by vm.syncController.subtitleBgAlpha.collectAsStateWithLifecycle()
 
     val brightness      by vm.displayController.brightness.collectAsStateWithLifecycle()
     val contrast        by vm.displayController.contrast.collectAsStateWithLifecycle()
@@ -144,6 +146,18 @@ fun PlayerScreen(
     var resizeMode      by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var isLooping       by remember { mutableStateOf(false) }
     var isRotationLocked by remember { mutableStateOf(false) }
+
+    // Sleep timer state
+    var sleepTimerRemainingSeconds by remember { mutableIntStateOf(0) }
+    var showSleepTimerDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(sleepTimerRemainingSeconds) {
+        if (sleepTimerRemainingSeconds > 0) {
+            delay(1_000)
+            sleepTimerRemainingSeconds--
+            if (sleepTimerRemainingSeconds == 0) vm.playerController.pause()
+        }
+    }
 
     var indicatorIcon    by remember { mutableStateOf(Icons.Default.VolumeUp) }
     var indicatorText    by remember { mutableStateOf("") }
@@ -210,27 +224,19 @@ fun PlayerScreen(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-    DisposableEffect(isLandscape) {
-        val window = activity?.window
-        val insetsController = window?.let { WindowInsetsControllerCompat(it, it.decorView) }
-
-        if (isLandscape) {
-            insetsController?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-            window?.attributes = window?.attributes?.apply {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
-            }
-        } else {
-            insetsController?.show(WindowInsetsCompat.Type.systemBars())
-            window?.attributes = window?.attributes?.apply {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-                }
+    // Always hide system bars in the player — both portrait and landscape.
+    // Swiping from edge temporarily reveals bars (BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE).
+    // Cleanup (show bars + reset cutout) is handled by the DisposableEffect(Unit) below.
+    DisposableEffect(Unit) {
+        val window = activity?.window ?: return@DisposableEffect onDispose {}
+        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+        insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        insetsController.hide(WindowInsetsCompat.Type.systemBars())
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
-
         onDispose { }
     }
 
@@ -331,42 +337,83 @@ fun PlayerScreen(
                             keepScreenOn = true
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
                             setLayerType(android.view.View.LAYER_TYPE_HARDWARE, videoFilterPaint)
-                            // Hide the built-in subtitle renderer — we draw cues ourselves
-                            // via the SubtitleView overlay below so we can apply delay.
-                            subtitleView?.visibility = android.view.View.GONE
+                            // Keep the built-in SubtitleView visible — it is a child of PlayerView's
+                            // content frame and is therefore constrained to the actual video area
+                            // (respects letterbox in portrait). A standalone fillMaxSize overlay
+                            // would span the full screen including black bars.
                         }
                     },
                     update = { view ->
                         view.resizeMode = resizeMode
-                        // Only triggers when videoFilterPaint reference changes (i.e. contrast/saturation changed)
                         view.setLayerPaint(videoFilterPaint)
+                        // Drive delayed/styled cues into the built-in subtitle view.
+                        view.subtitleView?.let { sv ->
+                            sv.setCues(activeCues)
+                            // Block embedded ASS/SSA font sizes — some videos bake in
+                            // enormous sizes that cover the whole screen.
+                            sv.setApplyEmbeddedFontSizes(false)
+                            sv.setApplyEmbeddedStyles(false)
+                            sv.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, subtitleSize)
+                            val bgArgb = android.graphics.Color.argb(
+                                (subtitleBgAlpha * 255).toInt(), 0, 0, 0
+                            )
+                            sv.setStyle(
+                                androidx.media3.ui.CaptionStyleCompat(
+                                    subtitleTextColor.toInt(),
+                                    bgArgb,
+                                    android.graphics.Color.TRANSPARENT,
+                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                                    android.graphics.Color.BLACK,
+                                    null
+                                )
+                            )
+                            // Bottom padding fraction: fraction of the subtitle view's height.
+                            sv.setBottomPaddingFraction(
+                                if (subtitlePosition == "Slightly Above") 0.18f else 0.08f
+                            )
+                        }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
-            }
-
-            // Subtitle overlay — lives outside the zoom/pan graphicsLayer so cues stay
-            // anchored to the screen edge regardless of pinch-zoom level.
-            // isClickable/isFocusable = false lets gestures pass through to GestureController.
-            val subtitleBottomPad = if (subtitlePosition == "Slightly Above") 80.dp else 16.dp
-            AndroidView(
-                factory = { ctx ->
-                    SubtitleView(ctx).apply {
-                        setUserDefaultStyle()
-                        setUserDefaultTextSize()
-                        isClickable = false
-                        isFocusable = false
-                    }
-                },
-                update = { view -> view.setCues(activeCues) },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = subtitleBottomPad)
-            )
+        }
         }
 
         // ── All interactive overlays are hidden while in PiP — only video shows ──
         if (!isInPipMode) {
+
+        // ── Sleep timer dialog ───────────────────────────────────────────────
+        if (showSleepTimerDialog) {
+            AlertDialog(
+                onDismissRequest = { showSleepTimerDialog = false },
+                title = { Text("Sleep Timer") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(0 to "Off", 15 to "15 minutes", 30 to "30 minutes",
+                               45 to "45 minutes", 60 to "60 minutes").forEach { (minutes, label) ->
+                            val isSelected = sleepTimerRemainingSeconds == minutes * 60
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) AccentPrimary.copy(alpha = 0.15f) else Color.Transparent)
+                                    .clickable {
+                                        sleepTimerRemainingSeconds = minutes * 60
+                                        showSleepTimerDialog = false
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(label, color = if (isSelected) AccentPrimary else Color.White)
+                                if (isSelected) Icon(Icons.Default.Check, null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                containerColor = CardSurface
+            )
+        }
 
         // ── Error overlay ────────────────────────────────────────────────────
         error?.let { errorMessage ->
@@ -486,7 +533,9 @@ fun PlayerScreen(
                             activity?.enterPictureInPictureMode(params)
                         } catch (_: Exception) {}
                     }
-                }
+                },
+                sleepTimerRemaining = sleepTimerRemainingSeconds,
+                onSleepTimerClick = { showSleepTimerDialog = true }
             )
         }
 
@@ -543,7 +592,13 @@ fun PlayerScreen(
                             showIndicator(Icons.Default.Sync, "Subtitle Sync: ${if(it>0) "+" else ""}${String.format("%.1f", it)}s")
                         },
                         subtitlePosition = subtitlePosition,
-                        onSubtitlePositionChange = { vm.syncController.setSubtitlePosition(it) }
+                        onSubtitlePositionChange = { vm.syncController.setSubtitlePosition(it) },
+                        subtitleSize = subtitleSize,
+                        onSubtitleSizeChange = { vm.syncController.setSubtitleSize(it) },
+                        subtitleTextColor = subtitleTextColor,
+                        onSubtitleTextColorChange = { vm.syncController.setSubtitleTextColor(it) },
+                        subtitleBgAlpha = subtitleBgAlpha,
+                        onSubtitleBgAlphaChange = { vm.syncController.setSubtitleBgAlpha(it) }
                     )
                 }
             }
@@ -607,7 +662,7 @@ fun PlayerScreen(
 // Returns true whenever the activity is in Picture-in-Picture mode.
 // Re-evaluates on every lifecycle event so it captures the transition reliably.
 @Composable
-private fun rememberIsInPipMode(): Boolean {
+fun rememberIsInPipMode(): Boolean {
     val activity = LocalContext.current as? Activity ?: return false
     var isInPip by remember { mutableStateOf(activity.isInPictureInPictureMode) }
     val lifecycleOwner = LocalLifecycleOwner.current

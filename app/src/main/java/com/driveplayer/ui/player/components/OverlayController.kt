@@ -44,7 +44,9 @@ fun OverlayController(
     onBack: () -> Unit,
     onAspectRatioClick: () -> Unit,
     onAspectRatioLongClick: () -> Unit,
-    onPipClick: () -> Unit
+    onPipClick: () -> Unit,
+    sleepTimerRemaining: Int = 0,
+    onSleepTimerClick: () -> Unit = {},
 ) {
     var sliderPosition by remember { mutableStateOf<Float?>(null) }
 
@@ -87,6 +89,31 @@ fun OverlayController(
                     color = AccentPrimary,
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
+            }
+            // Sleep timer button — shows remaining time badge when active
+            Box(contentAlignment = Alignment.TopEnd) {
+                IconButton(onClick = onSleepTimerClick) {
+                    Icon(
+                        Icons.Default.Bedtime,
+                        contentDescription = "Sleep Timer",
+                        tint = if (sleepTimerRemaining > 0) AccentPrimary else Color.White,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+                if (sleepTimerRemaining > 0) {
+                    val m = sleepTimerRemaining / 60
+                    val s = sleepTimerRemaining % 60
+                    val label = if (m > 0) "${m}m" else "${s}s"
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Black,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(AccentPrimary)
+                            .padding(horizontal = 3.dp)
+                    )
+                }
             }
             IconButton(onClick = onPipClick) {
                 Icon(Icons.Default.PictureInPictureAlt, contentDescription = "PiP", tint = Color.White, modifier = Modifier.size(26.dp))

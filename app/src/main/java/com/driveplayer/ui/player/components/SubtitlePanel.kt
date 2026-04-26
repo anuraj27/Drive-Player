@@ -1,12 +1,15 @@
 package com.driveplayer.ui.player.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +24,13 @@ import com.driveplayer.ui.theme.SurfaceVariant
 import com.driveplayer.ui.theme.TextPrimary
 import com.driveplayer.ui.theme.TextSecondary
 
+private val subtitleColorOptions = listOf(
+    "White"  to 0xFFFFFFFFL,
+    "Yellow" to 0xFFFFFF00L,
+    "Cyan"   to 0xFF00FFFFL,
+    "Green"  to 0xFF00FF00L,
+)
+
 @Composable
 fun SubtitlePanel(
     onDismiss: () -> Unit,
@@ -33,7 +43,13 @@ fun SubtitlePanel(
     subtitleDelay: Float,
     onSubtitleDelayChange: (Float) -> Unit,
     subtitlePosition: String,
-    onSubtitlePositionChange: (String) -> Unit
+    onSubtitlePositionChange: (String) -> Unit,
+    subtitleSize: Float,
+    onSubtitleSizeChange: (Float) -> Unit,
+    subtitleTextColor: Long,
+    onSubtitleTextColorChange: (Long) -> Unit,
+    subtitleBgAlpha: Float,
+    onSubtitleBgAlphaChange: (Float) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -60,7 +76,7 @@ fun SubtitlePanel(
         }
         Spacer(Modifier.height(16.dp))
 
-        // ── Toggle Section ──────────────────────────────────────────────────
+        // ── Toggle ──────────────────────────────────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -76,10 +92,10 @@ fun SubtitlePanel(
         Spacer(Modifier.height(16.dp))
 
         if (subtitlesEnabled) {
-            // ── Subtitle Track List ─────────────────────────────────────────────
+            // ── Subtitle Track List ──────────────────────────────────────────
             Text("Subtitle Track", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(8.dp))
-            
+
             if (availableSubtitleTracks.isEmpty()) {
                 Text("No subtitles available", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
             } else {
@@ -115,18 +131,104 @@ fun SubtitlePanel(
                     }
                 }
             }
-            
+
             Spacer(Modifier.height(16.dp))
-            OutlinedButton(
-                onClick = onLoadExternalSubtitle,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            OutlinedButton(onClick = onLoadExternalSubtitle, modifier = Modifier.fillMaxWidth()) {
                 Text("Load subtitle file (.srt)", color = TextPrimary)
             }
 
             Spacer(Modifier.height(24.dp))
 
-            // ── Subtitle Sync (Delay) ───────────────────────────────────────────
+            // ── Text Size ────────────────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Text Size", color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${subtitleSize.toInt()}sp",
+                    color = AccentPrimary,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Slider(
+                value = subtitleSize,
+                onValueChange = onSubtitleSizeChange,
+                valueRange = 10f..32f,
+                colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Small", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                Text("Large", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── Text Color ───────────────────────────────────────────────────
+            Text("Text Color", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                subtitleColorOptions.forEach { (name, colorLong) ->
+                    val argb = colorLong.toInt()
+                    val composeColor = Color(argb)
+                    val isSelected = subtitleTextColor == colorLong
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(composeColor)
+                            .border(
+                                width = if (isSelected) 2.dp else 0.dp,
+                                color = if (isSelected) AccentPrimary else Color.Transparent,
+                                shape = CircleShape
+                            )
+                            .clickable { onSubtitleTextColorChange(colorLong) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = name,
+                                tint = Color.Black,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── Background Opacity ───────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Background", color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${(subtitleBgAlpha * 100).toInt()}%",
+                    color = AccentPrimary,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Slider(
+                value = subtitleBgAlpha,
+                onValueChange = onSubtitleBgAlphaChange,
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("None", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                Text("Opaque", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── Subtitle Sync (Delay) ────────────────────────────────────────
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -141,20 +243,17 @@ fun SubtitlePanel(
                 value = subtitleDelay,
                 onValueChange = onSubtitleDelayChange,
                 valueRange = -5f..5f,
-                steps = 99, // -5.0 to 5.0 with 0.1 increments
+                steps = 99,
                 colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("-5s", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
                 Text("+5s", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
             }
 
             Spacer(Modifier.height(24.dp))
 
-            // ── Subtitle Position ───────────────────────────────────────────────
+            // ── Subtitle Position ────────────────────────────────────────────
             Text("Position", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

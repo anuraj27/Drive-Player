@@ -43,6 +43,16 @@ class SyncController(private val player: Player, private val scope: CoroutineSco
     private val _subtitlePosition = MutableStateFlow("Bottom")
     val subtitlePosition: StateFlow<String> = _subtitlePosition
 
+    private val _subtitleSize = MutableStateFlow(16f)  // SP units — orientation-independent
+    val subtitleSize: StateFlow<Float> = _subtitleSize
+
+    // Stored as ARGB Long (e.g. 0xFFFFFFFF for white) — toInt() wraps correctly for Android color ints.
+    private val _subtitleTextColor = MutableStateFlow(0xFFFFFFFFL)
+    val subtitleTextColor: StateFlow<Long> = _subtitleTextColor
+
+    private val _subtitleBgAlpha = MutableStateFlow(0.5f)
+    val subtitleBgAlpha: StateFlow<Float> = _subtitleBgAlpha
+
     // Current cues to render — managed by onCues + optional delay coroutine.
     private val _activeCues = MutableStateFlow<List<Cue>>(emptyList())
     val activeCues: StateFlow<List<Cue>> = _activeCues
@@ -106,12 +116,19 @@ class SyncController(private val player: Player, private val scope: CoroutineSco
     fun selectSubtitleTrack(index: Int) {
         val subtitleGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
         if (index !in subtitleGroups.indices) return
-        player.trackSelectionParameters = player.trackSelectionParameters
-            .buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-            .addOverride(TrackSelectionOverride(subtitleGroups[index].mediaTrackGroup, 0))
-            .build()
-        _selectedSubtitleTrack.value = index
+        try {
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                // Re-enable text tracks in case they were disabled via toggleSubtitles(false)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .addOverride(TrackSelectionOverride(subtitleGroups[index].mediaTrackGroup, 0))
+                .build()
+            _subtitlesEnabled.value = true
+            _selectedSubtitleTrack.value = index
+        } catch (_: Exception) {
+            // TrackGroup reference became stale between UI render and tap; onTracksChanged will resync
+        }
     }
 
     fun setAudioDelay(delay: Float) {
@@ -125,6 +142,10 @@ class SyncController(private val player: Player, private val scope: CoroutineSco
     fun setSubtitlePosition(position: String) {
         _subtitlePosition.value = position
     }
+
+    fun setSubtitleSize(size: Float) { _subtitleSize.value = size }
+    fun setSubtitleTextColor(color: Long) { _subtitleTextColor.value = color }
+    fun setSubtitleBgAlpha(alpha: Float) { _subtitleBgAlpha.value = alpha }
 
     private fun refreshAudioTracks(tracks: Tracks) {
         val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }

@@ -9,6 +9,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -40,6 +41,9 @@ class PlayerController(
     private val positionStore = PlaybackPositionStore(context)
     private var currentVideoFile: DriveFile? = null
     private var hasSeekedToSavedPosition = false
+    // One-shot flag: try disabling text tracks on first ambiguous runtime error,
+    // then treat any subsequent error as a real playback failure.
+    @Volatile private var subtitleRecoveryAttempted = false
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
@@ -88,7 +92,46 @@ class PlayerController(
 
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                _error.value = "Playback error: ${error.message}"
+                val ex = error as? ExoPlaybackException
+
+                // Case 1: definitive text renderer error (TYPE_RENDERER on text track)
+                val isDefiniteTextError = try {
+                    ex != null &&
+                    ex.type == ExoPlaybackException.TYPE_RENDERER &&
+                    ex.rendererIndex >= 0 &&
+                    ex.rendererIndex < player.rendererCount &&
+                    player.getRendererType(ex.rendererIndex) == C.TRACK_TYPE_TEXT
+                } catch (_: Exception) { false }
+
+                // Case 2: ambiguous runtime/unexpected error while text tracks were active.
+                // Subtitle parsers (ASS, PGS, etc.) can throw RuntimeException which ExoPlayer
+                // wraps as TYPE_UNEXPECTED rather than TYPE_RENDERER.
+                val hasActiveTextTracks = try {
+                    player.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
+                } catch (_: Exception) { false }
+                val isAmbiguousWithText = ex?.type == ExoPlaybackException.TYPE_UNEXPECTED &&
+                    hasActiveTextTracks && !subtitleRecoveryAttempted
+
+                if (isDefiniteTextError || isAmbiguousWithText) {
+                    subtitleRecoveryAttempted = true
+                    try {
+                        player.trackSelectionParameters = player.trackSelectionParameters
+                            .buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                            .build()
+                        if (player.playbackState == Player.STATE_IDLE) {
+                            hasSeekedToSavedPosition = false
+                            player.prepare()
+                        }
+                        player.playWhenReady = true
+                        // _error stays null — playback continues silently without subtitles
+                    } catch (_: Exception) {
+                        _error.value = "Playback error: ${error.message}"
+                    }
+                } else {
+                    subtitleRecoveryAttempted = false
+                    _error.value = "Playback error: ${error.message}"
+                }
             }
 
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
@@ -163,6 +206,7 @@ class PlayerController(
         if (repo == null) return
         currentVideoFile = videoFile
         hasSeekedToSavedPosition = false
+        subtitleRecoveryAttempted = false
 
         scope.launch {
             val mediaItemBuilder = MediaItem.Builder()
@@ -193,6 +237,7 @@ class PlayerController(
     fun prepareAndPlayLocal(localVideo: LocalVideo) {
         currentVideoFile = null
         hasSeekedToSavedPosition = false
+        subtitleRecoveryAttempted = false
 
         scope.launch {
             val mediaItem = MediaItem.Builder()
@@ -266,6 +311,7 @@ class PlayerController(
 
     fun retryPlayback() {
         _error.value = null
+        subtitleRecoveryAttempted = false
         if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
             hasSeekedToSavedPosition = false
             player.prepare()
