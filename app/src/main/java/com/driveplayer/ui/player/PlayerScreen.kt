@@ -39,6 +39,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
+import com.driveplayer.MainActivity
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
@@ -125,6 +127,13 @@ fun PlayerScreen(
     val contrast        by vm.displayController.contrast.collectAsStateWithLifecycle()
     val saturation      by vm.displayController.saturation.collectAsStateWithLifecycle()
 
+    val activeCues      by vm.syncController.activeCues.collectAsStateWithLifecycle()
+
+    val isInPipMode     = rememberIsInPipMode()
+    // rememberUpdatedState keeps a stable State<T> reference so the PiP callback lambda
+    // always reads the latest isPlaying value without needing to be recreated.
+    val isPlayingState  = rememberUpdatedState(isPlaying)
+
     val subtitleFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let { vm.playerController.loadExternalSubtitle(it) } }
@@ -185,9 +194,11 @@ fun PlayerScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
-                vm.playerController.pause()
-            } else if (event == Lifecycle.Event.ON_RESUME) {
-                // Optionally resume here if desired, but typically we let the user manually resume
+                // isInPictureInPictureMode is true when PiP transition triggers onPause —
+                // keep playing so the PiP window shows live video.
+                if (activity?.isInPictureInPictureMode != true) {
+                    vm.playerController.pause()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -221,6 +232,31 @@ fun PlayerScreen(
         }
 
         onDispose { }
+    }
+
+    // Register on MainActivity so pressing Home during playback auto-enters PiP.
+    DisposableEffect(Unit) {
+        val mainActivity = activity as? MainActivity
+        mainActivity?.pipEntryCallback = {
+            if (isPlayingState.value && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                controlsVisible = false
+                try {
+                    val params = android.app.PictureInPictureParams.Builder()
+                        .setAspectRatio(android.util.Rational(16, 9))
+                        .build()
+                    activity?.enterPictureInPictureMode(params)
+                } catch (_: Exception) {}
+            }
+        }
+        onDispose { mainActivity?.pipEntryCallback = null }
+    }
+
+    // Collapse all UI overlays the moment PiP activates.
+    LaunchedEffect(isInPipMode) {
+        if (isInPipMode) {
+            controlsVisible = false
+            activeSettingsTab = null
+        }
     }
 
     DisposableEffect(Unit) {
@@ -295,6 +331,9 @@ fun PlayerScreen(
                             keepScreenOn = true
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
                             setLayerType(android.view.View.LAYER_TYPE_HARDWARE, videoFilterPaint)
+                            // Hide the built-in subtitle renderer — we draw cues ourselves
+                            // via the SubtitleView overlay below so we can apply delay.
+                            subtitleView?.visibility = android.view.View.GONE
                         }
                     },
                     update = { view ->
@@ -305,7 +344,29 @@ fun PlayerScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
+
+            // Subtitle overlay — lives outside the zoom/pan graphicsLayer so cues stay
+            // anchored to the screen edge regardless of pinch-zoom level.
+            // isClickable/isFocusable = false lets gestures pass through to GestureController.
+            val subtitleBottomPad = if (subtitlePosition == "Slightly Above") 80.dp else 16.dp
+            AndroidView(
+                factory = { ctx ->
+                    SubtitleView(ctx).apply {
+                        setUserDefaultStyle()
+                        setUserDefaultTextSize()
+                        isClickable = false
+                        isFocusable = false
+                    }
+                },
+                update = { view -> view.setCues(activeCues) },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = subtitleBottomPad)
+            )
         }
+
+        // ── All interactive overlays are hidden while in PiP — only video shows ──
+        if (!isInPipMode) {
 
         // ── Error overlay ────────────────────────────────────────────────────
         error?.let { errorMessage ->
@@ -538,5 +599,24 @@ fun PlayerScreen(
                 }
             }
         }
+
+        } // end if (!isInPipMode)
     }
+}
+
+// Returns true whenever the activity is in Picture-in-Picture mode.
+// Re-evaluates on every lifecycle event so it captures the transition reliably.
+@Composable
+private fun rememberIsInPipMode(): Boolean {
+    val activity = LocalContext.current as? Activity ?: return false
+    var isInPip by remember { mutableStateOf(activity.isInPictureInPictureMode) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, _ ->
+            isInPip = activity.isInPictureInPictureMode
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return isInPip
 }

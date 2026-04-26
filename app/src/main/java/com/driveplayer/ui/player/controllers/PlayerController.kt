@@ -17,6 +17,8 @@ import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
 import com.driveplayer.player.DriveDataSourceFactory
 import com.driveplayer.player.PlaybackPositionStore
+import com.driveplayer.player.WatchEntry
+import com.driveplayer.player.WatchHistoryStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,7 +32,8 @@ class PlayerController(
     private val context: Context,
     private val repo: DriveRepository?,
     private val okHttpClient: OkHttpClient?,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val watchHistoryStore: WatchHistoryStore? = null,
 ) {
     val player: ExoPlayer
 
@@ -103,7 +106,10 @@ class PlayerController(
                             if (saved > 5_000L) player.seekTo(saved)
                         }
                     }
-                    Player.STATE_ENDED -> currentVideoFile?.let { positionStore.clear(it.id) }
+                    Player.STATE_ENDED -> currentVideoFile?.let { file ->
+                        positionStore.clear(file.id)
+                        scope.launch { watchHistoryStore?.clear(file.id) }
+                    }
                     else -> {}
                 }
             }
@@ -121,7 +127,25 @@ class PlayerController(
                     _currentPosition.value = pos
                     _bufferedPosition.value = player.bufferedPosition
                     if (pos - lastSaveMs >= 5_000L) {
-                        currentVideoFile?.let { positionStore.save(it.id, pos) }
+                        currentVideoFile?.let { file ->
+                            positionStore.save(file.id, pos)
+                            val dur = player.duration
+                            if (dur > 0L) {
+                                scope.launch {
+                                    watchHistoryStore?.save(
+                                        WatchEntry(
+                                            fileId = file.id,
+                                            title = file.name,
+                                            mimeType = file.mimeType,
+                                            thumbnailLink = file.thumbnailLink,
+                                            positionMs = pos,
+                                            durationMs = dur,
+                                            lastWatchedAt = System.currentTimeMillis(),
+                                        )
+                                    )
+                                }
+                            }
+                        }
                         lastSaveMs = pos
                     }
                     if (isLoopingSegment && loopEndMs > 0 && pos >= loopEndMs) {

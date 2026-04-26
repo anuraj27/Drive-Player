@@ -59,6 +59,26 @@ class DriveRepository(private val api: DriveApiService) {
         allFiles.sortedWith(compareByDescending<DriveFile> { it.isFolder }.thenBy { it.name })
     }
 
+    /** Searches across all of Drive for video files whose name contains [query]. */
+    suspend fun searchVideos(query: String): Result<List<DriveFile>> = runCatching {
+        val q = buildString {
+            append("name contains '${query.replace("'", "\\'")}'")
+            append(" and trashed = false")
+            append(" and mimeType contains 'video/'")
+        }
+
+        val allFiles = mutableListOf<DriveFile>()
+        var pageToken: String? = null
+
+        do {
+            val response = api.listFiles(query = q, pageToken = pageToken)
+            allFiles += response.files
+            pageToken = response.nextPageToken
+        } while (pageToken != null)
+
+        allFiles.sortedBy { it.name }
+    }
+
     /** Stream URL for a file — ExoPlayer fetches with Authorization header injected by OkHttp. */
     fun streamUrl(fileId: String): String =
         "https://www.googleapis.com/drive/v3/files/$fileId?alt=media"

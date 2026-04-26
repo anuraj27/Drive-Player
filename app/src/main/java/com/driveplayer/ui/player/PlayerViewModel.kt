@@ -8,6 +8,7 @@ import androidx.media3.common.util.UnstableApi
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
+import com.driveplayer.di.AppModule
 import com.driveplayer.ui.player.controllers.DisplayController
 import com.driveplayer.ui.player.controllers.PlayerController
 import com.driveplayer.ui.player.controllers.SyncController
@@ -23,8 +24,8 @@ class PlayerViewModel(
     localVideo: LocalVideo?,
 ) : ViewModel() {
 
-    val playerController = PlayerController(context, repo, okHttpClient, viewModelScope)
-    val syncController = SyncController(playerController.player)
+    val playerController = PlayerController(context, repo, okHttpClient, viewModelScope, AppModule.watchHistoryStore)
+    val syncController = SyncController(playerController.player, viewModelScope)
     val displayController = DisplayController()
 
     init {

@@ -4,13 +4,20 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.text.Cue
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 @UnstableApi
-class SyncController(private val player: Player) {
+class SyncController(private val player: Player, private val scope: CoroutineScope) {
 
     private val _subtitlesEnabled = MutableStateFlow(true)
     val subtitlesEnabled: StateFlow<Boolean> = _subtitlesEnabled
@@ -36,17 +43,49 @@ class SyncController(private val player: Player) {
     private val _subtitlePosition = MutableStateFlow("Bottom")
     val subtitlePosition: StateFlow<String> = _subtitlePosition
 
+    // Current cues to render — managed by onCues + optional delay coroutine.
+    private val _activeCues = MutableStateFlow<List<Cue>>(emptyList())
+    val activeCues: StateFlow<List<Cue>> = _activeCues
+
+    // Cancels the previous delayed-display job when a new cue or seek arrives.
+    private var pendingCueJob: Job? = null
+
     init {
         player.addListener(object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
                 refreshAudioTracks(tracks)
                 refreshSubtitleTracks(tracks)
             }
+
+            override fun onCues(cueGroup: CueGroup) {
+                if (!_subtitlesEnabled.value) return
+                pendingCueJob?.cancel()
+                if (cueGroup.cues.isEmpty()) {
+                    _activeCues.value = emptyList()
+                    return
+                }
+                val delayMs = (_subtitleDelay.value * 1_000f).toLong()
+                if (delayMs <= 0L) {
+                    // No delay — display immediately.
+                    _activeCues.value = cueGroup.cues
+                } else {
+                    // Positive delay: schedule display after delayMs.
+                    // Cancelling pendingCueJob on next cue/seek prevents stale cues surfacing.
+                    pendingCueJob = scope.launch {
+                        delay(delayMs)
+                        if (isActive) _activeCues.value = cueGroup.cues
+                    }
+                }
+            }
         })
     }
 
     fun toggleSubtitles(enable: Boolean) {
         _subtitlesEnabled.value = enable
+        if (!enable) {
+            pendingCueJob?.cancel()
+            _activeCues.value = emptyList()
+        }
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enable)
@@ -77,13 +116,10 @@ class SyncController(private val player: Player) {
 
     fun setAudioDelay(delay: Float) {
         _audioDelay.value = delay
-        // Note: Real audio delay is complex in ExoPlayer without custom AudioProcessors.
-        // This sets the UI state. A full ExoPlayer implementation would pipe this into the renderer.
     }
 
     fun setSubtitleDelay(delay: Float) {
         _subtitleDelay.value = delay
-        // Note: Subtitle delay works differently for embedded vs external in ExoPlayer.
     }
 
     fun setSubtitlePosition(position: String) {
@@ -94,10 +130,29 @@ class SyncController(private val player: Player) {
         val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
         _audioTracks.value = groups.mapIndexed { index, group ->
             val format = group.getTrackFormat(0)
-            format.language
-                ?.let { runCatching { Locale(it).displayLanguage }.getOrNull() }
-                ?.takeIf { it.isNotBlank() && it.any { c -> c.isUpperCase() } }
-                ?: "Track ${index + 1}"
+            buildString {
+                val langName = format.language
+                    ?.let { runCatching { Locale(it).displayLanguage }.getOrNull() }
+                    ?.takeIf { it.isNotBlank() }
+                when {
+                    langName != null -> append(langName)
+                    !format.label.isNullOrBlank() -> append(format.label)
+                    else -> append("Track ${index + 1}")
+                }
+                // Append channel layout and label (e.g. "English · Stereo · Commentary")
+                val channelStr = when (format.channelCount) {
+                    1 -> "Mono"
+                    2 -> "Stereo"
+                    6 -> "5.1"
+                    8 -> "7.1"
+                    else -> if (format.channelCount > 0) "${format.channelCount}ch" else null
+                }
+                val extras = listOfNotNull(
+                    channelStr,
+                    format.label?.takeIf { langName != null && it.isNotBlank() }
+                )
+                if (extras.isNotEmpty()) append(" · ${extras.joinToString(" · ")}")
+            }
         }
         _selectedAudioTrack.value = groups.indexOfFirst { it.isSelected }.coerceAtLeast(0)
     }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,7 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.driveplayer.ui.theme.*
 
-enum class HomeTab { LOCAL, CLOUD }
+enum class HomeTab { LOCAL, CLOUD, DOWNLOADS }
 
 @Composable
 fun HomeScreen(
@@ -22,10 +23,10 @@ fun HomeScreen(
     onTabChanged: (HomeTab) -> Unit = {},
     localContent: @Composable () -> Unit,
     cloudContent: @Composable () -> Unit,
+    downloadsContent: @Composable () -> Unit,
 ) {
     var activeTab by remember { mutableStateOf(initialTab) }
 
-    // Sync back to parent whenever tab changes
     LaunchedEffect(activeTab) { onTabChanged(activeTab) }
 
     Scaffold(
@@ -72,6 +73,24 @@ fun HomeScreen(
                         unselectedTextColor = TextMuted
                     )
                 )
+                NavigationBarItem(
+                    selected = activeTab == HomeTab.DOWNLOADS,
+                    onClick = { activeTab = HomeTab.DOWNLOADS },
+                    icon = { Icon(Icons.Default.Download, contentDescription = "Downloads") },
+                    label = {
+                        Text(
+                            "Downloads",
+                            fontWeight = if (activeTab == HomeTab.DOWNLOADS) FontWeight.Bold else FontWeight.Normal
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = AccentPrimary,
+                        selectedTextColor = AccentPrimary,
+                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                        unselectedIconColor = TextMuted,
+                        unselectedTextColor = TextMuted
+                    )
+                )
             }
         }
     ) { padding ->
@@ -87,8 +106,9 @@ fun HomeScreen(
                 label = "tab_transition"
             ) { tab ->
                 when (tab) {
-                    HomeTab.LOCAL -> localContent()
-                    HomeTab.CLOUD -> cloudContent()
+                    HomeTab.LOCAL     -> localContent()
+                    HomeTab.CLOUD     -> cloudContent()
+                    HomeTab.DOWNLOADS -> downloadsContent()
                 }
             }
         }

@@ -27,5 +27,14 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".ui.downloads.DownloadNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.driveplayer.DOWNLOAD_CANCEL" />
+                <action android:name="com.driveplayer.DOWNLOAD_RETRY" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>

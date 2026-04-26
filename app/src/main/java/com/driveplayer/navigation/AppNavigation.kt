@@ -7,6 +7,7 @@ import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
 import com.driveplayer.di.AppModule
 import com.driveplayer.ui.cloud.CloudScreen
+import com.driveplayer.ui.downloads.DownloadsScreen
 import com.driveplayer.ui.home.HomeScreen
 import com.driveplayer.ui.home.HomeTab
 import com.driveplayer.ui.local.LocalBrowserScreen
@@ -17,21 +18,17 @@ import okhttp3.OkHttpClient
  * Top-level navigation.
  *
  * Flow:
- *   HomeScreen (Local | Cloud tabs)
+ *   HomeScreen (Local | Cloud | Downloads tabs)
  *     └─ Local → LocalBrowserScreen → PlayerScreen
  *     └─ Cloud → CloudScreen (connect/browse) → PlayerScreen
- *
- * Sealed class navigation because we pass non-serializable objects
- * (OkHttpClient, DriveRepository) between screens.
+ *     └─ Downloads → DownloadsScreen → PlayerScreen (local URI)
  */
 @UnstableApi
 sealed class Screen {
     object Home : Screen()
 
-    /** Playing a local device video */
     data class LocalPlayer(val video: LocalVideo) : Screen()
 
-    /** Playing a Google Drive video */
     data class CloudPlayer(
         val videoFile: DriveFile,
         val siblingFiles: List<DriveFile>,
@@ -44,12 +41,8 @@ sealed class Screen {
 @Composable
 fun AppNavigation() {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
-
-    // Persist the active tab across navigations so back returns to the correct tab
-    var activeTab by remember { mutableStateOf(HomeTab.LOCAL) }
-
-    // Increments every time a video is opened — ensures a fresh ViewModel even for the same video
-    var playerSession by remember { mutableIntStateOf(0) }
+    var activeTab      by remember { mutableStateOf(HomeTab.LOCAL) }
+    var playerSession  by remember { mutableIntStateOf(0) }
 
     when (val screen = currentScreen) {
         is Screen.Home -> {
@@ -77,6 +70,26 @@ fun AppNavigation() {
                                 repo = repo,
                                 okHttpClient = client,
                             )
+                        }
+                    )
+                },
+                downloadsContent = {
+                    DownloadsScreen(
+                        onPlayDownload = { uri ->
+                            val syntheticVideo = LocalVideo(
+                                id = -1L,
+                                title = uri.lastPathSegment ?: "Downloaded Video",
+                                path = uri.path ?: "",
+                                uri = uri,
+                                duration = 0L,
+                                size = 0L,
+                                folderName = "Downloads",
+                                folderPath = "",
+                                dateModified = 0L,
+                            )
+                            activeTab = HomeTab.DOWNLOADS
+                            playerSession++
+                            currentScreen = Screen.LocalPlayer(syntheticVideo)
                         }
                     )
                 }

@@ -3,6 +3,10 @@ package com.driveplayer.di
 import android.content.Context
 import com.driveplayer.data.auth.GoogleSignInHelper
 import com.driveplayer.data.local.LocalVideoRepository
+import com.driveplayer.player.DownloadStore
+import com.driveplayer.player.DriveDownloadManager
+import com.driveplayer.player.PinnedFolderStore
+import com.driveplayer.player.WatchHistoryStore
 import com.driveplayer.data.remote.DriveApiService
 import com.driveplayer.data.remote.DriveRepository
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -36,6 +40,22 @@ object AppModule {
 
     val localVideoRepository: LocalVideoRepository by lazy {
         LocalVideoRepository(appContext)
+    }
+
+    val watchHistoryStore: WatchHistoryStore by lazy {
+        WatchHistoryStore(appContext)
+    }
+
+    val pinnedFolderStore: PinnedFolderStore by lazy {
+        PinnedFolderStore(appContext)
+    }
+
+    val downloadStore: DownloadStore by lazy {
+        DownloadStore(appContext)
+    }
+
+    val driveDownloadManager: DriveDownloadManager by lazy {
+        DriveDownloadManager(appContext)
     }
 
     val googleSignInClient: GoogleSignInClient by lazy {
