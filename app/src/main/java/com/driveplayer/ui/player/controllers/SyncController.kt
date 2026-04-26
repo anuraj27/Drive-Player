@@ -1,11 +1,8 @@
 package com.driveplayer.ui.player.controllers
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 import org.videolan.libvlc.MediaPlayer
 
 /**
@@ -20,9 +17,11 @@ import org.videolan.libvlc.MediaPlayer
  *    those sliders no longer mutate state at runtime (kept on the API for UI compatibility).
  */
 class SyncController(
-    private val mediaPlayer: MediaPlayer,
+    private val playerController: PlayerController,
     private val scope: CoroutineScope,
 ) {
+    // Track ops still go straight to the underlying MediaPlayer.
+    private val mediaPlayer: MediaPlayer = playerController.mediaPlayer
 
     private val _subtitlesEnabled = MutableStateFlow(true)
     val subtitlesEnabled: StateFlow<Boolean> = _subtitlesEnabled
@@ -62,18 +61,22 @@ class SyncController(
     private var audioTrackIds: List<Int> = emptyList()
     private var subtitleTrackIds: List<Int> = emptyList()
 
-    // Periodic refresh — libVLC doesn't fire a "tracks ready" event we can hook reliably,
-    // so we poll until tracks become available, then back off.
-    private var trackRefreshJob: Job? = null
+    // libVLC fires ESAdded / ESDeleted / ESSelected when tracks are enumerated or selected.
+    // We register through PlayerController's fan-out so we don't clobber its listener
+    // (libVLC's MediaPlayer allows only one setEventListener).
+    private val trackEventListener = MediaPlayer.EventListener { event ->
+        when (event.type) {
+            MediaPlayer.Event.ESAdded,
+            MediaPlayer.Event.ESDeleted,
+            MediaPlayer.Event.ESSelected,
+            MediaPlayer.Event.LengthChanged -> refreshTracks()
+        }
+    }
 
     init {
-        trackRefreshJob = scope.launch {
-            while (true) {
-                refreshTracks()
-                // Faster polling at first; slow down once we have tracks.
-                delay(if (_audioTracks.value.isEmpty() && _availableSubtitleTracks.value.isEmpty()) 500L else 2_000L)
-            }
-        }
+        // Pull whatever's already enumerated, then listen for changes.
+        refreshTracks()
+        playerController.addEventListener(trackEventListener)
     }
 
     private fun refreshTracks() {
@@ -159,6 +162,6 @@ class SyncController(
     fun setSubtitleBgAlpha(alpha: Float) { _subtitleBgAlpha.value = alpha }
 
     fun cancel() {
-        trackRefreshJob?.cancel()
+        playerController.removeEventListener(trackEventListener)
     }
 }

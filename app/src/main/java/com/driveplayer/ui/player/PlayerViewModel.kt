@@ -28,7 +28,7 @@ class PlayerViewModel(
         scope = viewModelScope,
         watchHistoryStore = AppModule.watchHistoryStore,
     )
-    val syncController = SyncController(playerController.mediaPlayer, viewModelScope)
+    val syncController = SyncController(playerController, viewModelScope)
     val displayController = DisplayController()
 
     // Hold inputs so PlayerScreen can trigger playback AFTER attachViews has run.

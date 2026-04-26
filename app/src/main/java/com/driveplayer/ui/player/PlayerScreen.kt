@@ -143,6 +143,15 @@ fun PlayerScreen(
     var isLooping       by remember { mutableStateOf(false) }
     var isRotationLocked by remember { mutableStateOf(false) }
 
+    // Track if video was playing before PiP to resume after PiP exit
+    var wasPlayingBeforePip by remember { mutableStateOf(false) }
+
+    // Track if we're in PiP mode to distinguish from screen-off scenario
+    var wasInPipBeforePause by remember { mutableStateOf(false) }
+
+    // Track if video was playing before screen-off / activity pause
+    var wasPlayingBeforePause by remember { mutableStateOf(false) }
+
     // Sleep timer state
     var sleepTimerRemainingSeconds by remember { mutableIntStateOf(0) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
@@ -158,6 +167,9 @@ fun PlayerScreen(
     var indicatorIcon    by remember { mutableStateOf(Icons.Default.VolumeUp) }
     var indicatorText    by remember { mutableStateOf("") }
     var indicatorVisible by remember { mutableStateOf(false) }
+
+    // Store reference to VLC surface for re-attachment on resume
+    var vlcSurface by remember { mutableStateOf<org.videolan.libvlc.util.VLCVideoLayout?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
 
@@ -203,12 +215,68 @@ fun PlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
-                // isInPictureInPictureMode is true when PiP transition triggers onPause —
-                // keep playing so the PiP window shows live video.
-                if (activity?.isInPictureInPictureMode != true) {
-                    vm.playerController.pause()
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    val currentlyInPip = activity?.isInPictureInPictureMode == true
+                    if (currentlyInPip) {
+                        // Entering PiP — remember playing state, let video continue
+                        wasInPipBeforePause = true
+                        wasPlayingBeforePip = vm.playerController.isPlaying.value
+                    } else if (wasInPipBeforePause) {
+                        // Exiting PiP (ON_PAUSE fires with isInPictureInPictureMode=false)
+                        // Stop playback immediately to prevent background audio
+                        vm.playerController.pause()
+                    } else {
+                        // Normal pause (screen off, app backgrounded without PiP)
+                        wasPlayingBeforePause = vm.playerController.isPlaying.value
+                        vm.playerController.pause()
+                    }
                 }
+                Lifecycle.Event.ON_STOP -> {
+                    // Double-safety: if player is still running in background, pause it.
+                    // This catches edge cases where ON_PAUSE didn't fully handle things.
+                    if (!wasInPipBeforePause && vm.playerController.isPlaying.value) {
+                        wasPlayingBeforePause = true
+                        vm.playerController.pause()
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    val currentlyInPip = activity?.isInPictureInPictureMode == true
+                    if (currentlyInPip) {
+                        // Entered PiP and resumed inside PiP — nothing to do
+                        return@LifecycleEventObserver
+                    }
+
+                    if (wasInPipBeforePause) {
+                        // Returning from PiP to full screen.
+                        // PiP exit changes the surface geometry, so a full vout
+                        // rebuild is required here.
+                        wasInPipBeforePause = false
+                        vlcSurface?.let { surface ->
+                            try { vm.playerController.mediaPlayer.detachViews() } catch (_: Exception) {}
+                            vm.playerController.mediaPlayer.attachViews(
+                                surface, null, false, true
+                            )
+                        }
+                        if (wasPlayingBeforePip) {
+                            vm.playerController.play()
+                            wasPlayingBeforePip = false
+                        }
+                    } else {
+                        // Returning from screen-off or background.
+                        // With TextureView the GL texture persists across
+                        // screen-off/on — VLC's vout and the MediaCodec
+                        // decoder pipeline stay alive. Just resume playback;
+                        // do NOT detach/reattach views (that would destroy
+                        // the vout and force a full MediaCodec rebuild,
+                        // causing a multi-second video delay).
+                        if (wasPlayingBeforePause) {
+                            vm.playerController.play()
+                            wasPlayingBeforePause = false
+                        }
+                    }
+                }
+                else -> { /* Other lifecycle events not handled */ }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -237,6 +305,9 @@ fun PlayerScreen(
     }
 
     // Register on MainActivity so pressing Home during playback auto-enters PiP.
+    // Also register the PiP exit callback so the player is paused immediately when
+    // the user exits PiP — this fires before lifecycle observers and prevents
+    // any window of background audio.
     DisposableEffect(Unit) {
         val mainActivity = activity as? MainActivity
         mainActivity?.pipEntryCallback = {
@@ -250,7 +321,13 @@ fun PlayerScreen(
                 } catch (_: Exception) {}
             }
         }
-        onDispose { mainActivity?.pipEntryCallback = null }
+        mainActivity?.pipExitCallback = {
+            vm.playerController.pause()
+        }
+        onDispose {
+            mainActivity?.pipEntryCallback = null
+            mainActivity?.pipExitCallback = null
+        }
     }
 
     // Collapse all UI overlays the moment PiP activates.
@@ -322,16 +399,19 @@ fun PlayerScreen(
                             keepScreenOn = true
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
                             // attachViews(layout, displayManager, subtitles, useTextureView).
-                            // subtitles=true — VLC renders subtitles into its own surface,
-                            // constrained to the video area (handles letterbox correctly).
+                            // subtitles=false — VLC's internal subtitle SurfaceView doesn't
+                            // work with TextureView mode. Subtitles are rendered by Compose.
+                            // useTextureView=true — TextureView renders to a GL texture that
+                            // persists across screen-off/on cycles, so the vout and MediaCodec
+                            // decoder pipeline survive screen-off without needing a rebuild.
                             vm.playerController.mediaPlayer.attachViews(
-                                this, null, true, false
+                                this, null, false, true
                             )
                             // Kick off playback now that the video surface is attached.
                             // Doing this earlier (in ViewModel.init) starves libVLC's vout
                             // of a Surface and decoding fails permanently.
                             vm.startPlaybackOnce()
-                        }
+                        }.also { vlcSurface = it }
                     },
                     update = { /* surface handled by libVLC; no per-frame work */ },
                     modifier = Modifier.fillMaxSize()

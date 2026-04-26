@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Wraps libVLC's MediaPlayer behind the same StateFlow surface the rest of the app
@@ -94,6 +95,19 @@ class PlayerController(
     // could fire at position 0 before metadata is available.
     @Volatile private var lengthKnown = false
 
+    // libVLC's MediaPlayer allows exactly one EventListener. PlayerController owns it and
+    // fans out to any number of secondary listeners (e.g. SyncController) registered here.
+    private val extraListeners = CopyOnWriteArrayList<MediaPlayer.EventListener>()
+
+    /** Register an additional listener. Safe to call from any thread. */
+    fun addEventListener(listener: MediaPlayer.EventListener) {
+        extraListeners.addIfAbsent(listener)
+    }
+
+    fun removeEventListener(listener: MediaPlayer.EventListener) {
+        extraListeners.remove(listener)
+    }
+
     init {
         mediaPlayer.setEventListener { event ->
             when (event.type) {
@@ -129,15 +143,26 @@ class PlayerController(
                     }
                 }
                 MediaPlayer.Event.EndReached -> {
-                    _isPlaying.value = false
-                    currentVideoFile?.let { file ->
-                        positionStore.clear(file.id)
-                        scope.launch { watchHistoryStore?.clear(file.id) }
+                    if (loopOne) {
+                        // Single-track loop — restart, do NOT clear saved position or history.
+                        mediaPlayer.time = 0L
+                        mediaPlayer.play()
+                    } else {
+                        _isPlaying.value = false
+                        currentVideoFile?.let { file ->
+                            positionStore.clear(file.id)
+                            scope.launch { watchHistoryStore?.clear(file.id) }
+                        }
                     }
                 }
                 MediaPlayer.Event.EncounteredError -> {
                     _error.value = "Playback error"
                 }
+            }
+
+            // Fan out to secondary listeners after our own state is updated.
+            for (l in extraListeners) {
+                try { l.onEvent(event) } catch (_: Exception) { /* never let one listener break the chain */ }
             }
         }
 
@@ -286,23 +311,14 @@ class PlayerController(
         mediaPlayer.rate = speed
     }
 
-    /** libVLC has no native single-track loop; we re-issue play() on EndReached if enabled. */
+    /** libVLC has no native single-track loop; loop is handled in the main listener's EndReached branch. */
     @Volatile private var loopOne = false
     fun setLooping(repeat: Boolean) {
         loopOne = repeat
-        // Hook EndReached for repeat — handled via a side observer.
-        // (Done lazily here so we don't add the listener twice.)
-        if (repeat && !loopListenerAttached) {
-            loopListenerAttached = true
-            mediaPlayer.setEventListener { event ->
-                if (event.type == MediaPlayer.Event.EndReached && loopOne) {
-                    mediaPlayer.time = 0L
-                    mediaPlayer.play()
-                }
-            }
-        }
+        // Loop logic lives inside the single setEventListener registered in init().
+        // Calling setEventListener again here would silently replace ours and kill
+        // every StateFlow update — libVLC supports exactly one listener.
     }
-    @Volatile private var loopListenerAttached = false
 
     fun setLoopStart() {
         _abLoopStart.value = mediaPlayer.time
