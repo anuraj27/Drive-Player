@@ -105,6 +105,7 @@ class LocalVideoRepository(private val context: Context) {
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.DATE_MODIFIED,
             MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Video.Media.MIME_TYPE,
         )
 
         val selection = "${MediaStore.Video.Media.DURATION} > ?"
@@ -124,12 +125,25 @@ class LocalVideoRepository(private val context: Context) {
             val sizeCol     = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
             val dateCol     = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
             val bucketCol   = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+            val mimeCol     = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
 
             while (cursor.moveToNext()) {
                 val id   = cursor.getLong(idCol)
                 val path = cursor.getString(pathCol) ?: continue
-                val uri  = ContentUris.withAppendedId(collection, id)
 
+                // Defence-in-depth: MediaStore.Video.Media should already be a
+                // video-only collection, but we've seen cases where an audio
+                // file with embedded artwork or a malformed container ends up
+                // here with a non-video MIME type (e.g. audio/* or even
+                // application/octet-stream). Drop anything that's NOT
+                // explicitly video/* AND whose extension isn't a known video
+                // format — this keeps the folder count honest without
+                // accidentally hiding real videos that have a missing/odd
+                // MIME type.
+                val mime = cursor.getString(mimeCol).orEmpty()
+                if (!isLikelyVideo(mime, path)) continue
+
+                val uri  = ContentUris.withAppendedId(collection, id)
                 results += LocalVideo(
                     id          = id,
                     title       = cursor.getString(nameCol) ?: "Unknown",
@@ -144,5 +158,29 @@ class LocalVideoRepository(private val context: Context) {
             }
         }
         return results
+    }
+
+    /**
+     * Two-tier filter:
+     *  1. If the MIME type is known and starts with `video/`, accept.
+     *  2. If the MIME type is missing or non-video but the file extension is
+     *     a recognised video extension, accept (covers files MediaStore tagged
+     *     poorly, e.g. an `.mkv` ending up as `application/octet-stream`).
+     *  3. Otherwise reject.
+     */
+    private fun isLikelyVideo(mime: String, path: String): Boolean {
+        if (mime.startsWith("video/", ignoreCase = true)) return true
+        val ext = path.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+        return ext in VIDEO_EXTENSIONS
+    }
+
+    private companion object {
+        /** Container extensions libVLC can play that we want represented even
+         *  if MediaStore tagged them with a non-video MIME type. */
+        val VIDEO_EXTENSIONS = setOf(
+            "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv",
+            "ts", "mts", "m2ts", "vob", "mpg", "mpeg", "3gp", "3g2",
+            "ogv", "ogg", "rm", "rmvb", "asf", "divx", "f4v",
+        )
     }
 }

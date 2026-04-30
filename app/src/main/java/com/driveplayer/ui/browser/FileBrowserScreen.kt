@@ -394,7 +394,15 @@ private fun BrowseContent(
                 }
 
                 // ── File list ──────────────────────────────────────────────
-                if (s.files.isEmpty()) {
+                // Render only folders + videos. The repository deliberately also
+                // returns `.srt` files in `s.files` so the player can auto-attach
+                // an external subtitle that lives next to the video — but those
+                // sidecar files have no business taking up space in the user-
+                // facing browse list. We pass the unfiltered `s.files` as the
+                // sibling argument to onFileClick so the auto-attach lookup
+                // still has access to the subtitles.
+                val visibleFiles = s.files.filter { it.isFolder || it.isVideo }
+                if (visibleFiles.isEmpty()) {
                     item(key = "empty") {
                         Column(
                             modifier = Modifier
@@ -404,14 +412,14 @@ private fun BrowseContent(
                         ) {
                             Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextMuted, modifier = Modifier.size(64.dp))
                             Spacer(Modifier.height(12.dp))
-                            Text("This folder is empty", color = TextMuted)
+                            Text("No videos in this folder", color = TextMuted)
                         }
                     }
                 } else {
                     item(key = "files_header") {
                         Spacer(Modifier.height(4.dp))
                     }
-                    items(s.files, key = { it.id }) { file ->
+                    items(visibleFiles, key = { it.id }) { file ->
                         Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 3.dp)) {
                             FileItem(
                                 file = file,
