@@ -14,6 +14,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import com.driveplayer.BuildConfig
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -61,6 +62,27 @@ object AppModule {
     val driveDownloadManager: DriveDownloadManager by lazy {
         DriveDownloadManager(appContext)
     }
+
+    /**
+     * Live byte-level progress for active downloads, keyed by Drive fileId →
+     * (bytesDownloaded, totalBytes). Written by [com.driveplayer.player.DownloadService]
+     * every ~500 ms during the queue/poll loop and read by `DownloadsViewModel` to
+     * render the progress bar without hammering DataStore. Entries are removed when
+     * the corresponding download reaches a terminal state (final values are also
+     * persisted to [downloadStore]).
+     */
+    val liveDownloadProgress: MutableStateFlow<Map<String, Pair<Long, Long>>> =
+        MutableStateFlow(emptyMap())
+
+    /**
+     * One-shot request from a notification (or other deep-link) to switch the
+     * Home screen to a particular tab on the next composition. `AppNavigation`
+     * consumes the value and resets it back to null.
+     *
+     * String type to avoid an awkward UI module dependency from this DI module.
+     * Valid values match the names of [com.driveplayer.ui.home.HomeTab].
+     */
+    val requestedHomeTab: MutableStateFlow<String?> = MutableStateFlow(null)
 
     val googleSignInClient: GoogleSignInClient by lazy {
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)

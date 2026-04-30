@@ -50,6 +50,8 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 | `player/PinnedFolderStore.kt` | DataStore-backed pinned folder list (cap 20). |
 | `player/DownloadStore.kt` | DataStore-backed `DownloadEntry` list (status, dmId, bytes, accessToken cached for retry). |
 | `player/DriveDownloadManager.kt` | Wraps Android `DownloadManager` with Drive's `?alt=media` URL + Authorization header + per-file destination in `getExternalFilesDir`. |
+| `player/DownloadService.kt` | Foreground service that owns the queue advancement + DownloadManager poll loop + reconcile-on-startup. Posts an ongoing progress notification while at least one entry is QUEUED/RUNNING and self-stops when the queue is empty. `START_STICKY` so a kill mid-download is auto-resumed. Its `ACTION_CANCEL_ALL` is wired to the notification's "Cancel all" action. |
+| `player/DownloadNotifications.kt` | Notification channel definitions (`drive_downloads_progress` LOW, `drive_downloads_completed` DEFAULT) and builders for the ongoing FGS notification + per-file completion / failure alerts. Uses Android's built-in `stat_sys_download` icons. |
 
 ### Player UI components
 | Path | Purpose |
@@ -120,9 +122,16 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 
 ### Downloads
 - Single concurrent download (`MAX_CONCURRENT = 1`). Queue order is FIFO by `enqueuedAt`.
-- Bytes are written directly into `_downloads` StateFlow during the 500 ms poll loop — NOT into DataStore — to avoid hammering disk.
-- Status transitions (queued → running → completed/failed/cancelled) DO write to DataStore so they survive app restart.
-- The Android `DownloadManager` shows its own system notification (`VISIBILITY_VISIBLE_NOTIFY_COMPLETED`).
+- The queue/poll loop now lives inside `DownloadService` (a foreground service), NOT in the ViewModel. This is what lets downloads keep advancing — and queued #2 actually start — while the app is closed or the user is on another screen. The VM (`DownloadsViewModel : AndroidViewModel`) is a pure UI binder: it observes the `DownloadStore` flow combined with `AppModule.liveDownloadProgress` and forwards user actions.
+- Service is started from three places (all idempotent via `ContextCompat.startForegroundService`): `MainActivity.onCreate` if any non-terminal entries exist, `FileBrowserViewModel.downloadFile` after enqueuing, and `DownloadsViewModel.retry`. The service self-stops as soon as the queue is empty.
+- Bytes are written into `AppModule.liveDownloadProgress: MutableStateFlow<Map<fileId, (downloaded, total)>>` every ~500 ms (no DataStore writes on the hot path); the VM combines that with the store flow to render the progress bar.
+- Status transitions (queued → running → completed/failed/cancelled) and the FINAL byte counts at termination ARE persisted to DataStore so they survive app restart.
+- Notifications: an ongoing foreground notification on the LOW-importance "Downloads in progress" channel shows the active file's title + percent + "X in queue" subtext, with a "Cancel all" action wired through `ACTION_CANCEL_ALL`. Each completed file gets a one-shot alert on the DEFAULT-importance "Downloads completed" channel; failures get the same channel with an error icon. Tapping a completion notification deep-links into the Downloads tab via `MainActivity.ACTION_OPEN_DOWNLOADS` → `AppModule.requestedHomeTab` (consumed by `AppNavigation`).
+- The Android `DownloadManager` ALSO shows its own system notification per file (`VISIBILITY_VISIBLE_NOTIFY_COMPLETED`); the in-app FGS notification is for queue-level visibility while ours actively manages the queue.
+
+### Notification permission
+- `POST_NOTIFICATIONS` is requested at first launch on Android 13+ via `MainActivity.notifPermissionLauncher`. Refusal is non-fatal: downloads still run, the user just doesn't see the live progress notification.
+- The two notification channels are created idempotently in `DownloadService.onCreate()` (and again on first use elsewhere if needed) — calling `createNotificationChannel` for an existing channel is a no-op and preserves user-customised channel settings.
 
 ### Multi-account
 - `GoogleSignInHelper.clientCache` keeps a `GoogleSignInClient` per email so the account picker can be skipped when switching to a known account.
@@ -136,6 +145,7 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 - ✅ Pinned folders (long-press in browser).
 - ✅ Continue Watching carousel — refetches siblings on reopen so external `.srt` auto-attach works.
 - ✅ Per-file Download to local storage with queue, retry, cancel, delete.
+- ✅ **Background downloads** — a foreground `DownloadService` keeps the queue advancing while the app is closed, with a live progress notification + per-file completion alerts.
 - ✅ Local video browser (MediaStore, folder grouping).
 - ✅ libVLC playback for local + cloud + downloaded videos.
 - ✅ VLC-like gestures (pinch zoom, double-tap, drag seek/brightness/volume).

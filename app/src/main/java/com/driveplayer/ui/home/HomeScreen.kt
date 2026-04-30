@@ -19,15 +19,15 @@ enum class HomeTab { LOCAL, CLOUD, DOWNLOADS }
 
 @Composable
 fun HomeScreen(
-    initialTab: HomeTab = HomeTab.LOCAL,
+    selectedTab: HomeTab = HomeTab.LOCAL,
     onTabChanged: (HomeTab) -> Unit = {},
     localContent: @Composable () -> Unit,
     cloudContent: @Composable () -> Unit,
     downloadsContent: @Composable () -> Unit,
 ) {
-    var activeTab by remember { mutableStateOf(initialTab) }
-
-    LaunchedEffect(activeTab) { onTabChanged(activeTab) }
+    // Fully controlled: the parent (AppNavigation) owns the selected tab so
+    // deep links (e.g. "Download complete" notification) can drive it.
+    val activeTab = selectedTab
 
     Scaffold(
         containerColor = DarkBackground,
@@ -39,7 +39,7 @@ fun HomeScreen(
             ) {
                 NavigationBarItem(
                     selected = activeTab == HomeTab.LOCAL,
-                    onClick = { activeTab = HomeTab.LOCAL },
+                    onClick = { onTabChanged(HomeTab.LOCAL) },
                     icon = { Icon(Icons.Default.PhoneAndroid, contentDescription = "Local") },
                     label = {
                         Text(
@@ -57,7 +57,7 @@ fun HomeScreen(
                 )
                 NavigationBarItem(
                     selected = activeTab == HomeTab.CLOUD,
-                    onClick = { activeTab = HomeTab.CLOUD },
+                    onClick = { onTabChanged(HomeTab.CLOUD) },
                     icon = { Icon(Icons.Default.Cloud, contentDescription = "Cloud") },
                     label = {
                         Text(
@@ -75,7 +75,7 @@ fun HomeScreen(
                 )
                 NavigationBarItem(
                     selected = activeTab == HomeTab.DOWNLOADS,
-                    onClick = { activeTab = HomeTab.DOWNLOADS },
+                    onClick = { onTabChanged(HomeTab.DOWNLOADS) },
                     icon = { Icon(Icons.Default.Download, contentDescription = "Downloads") },
                     label = {
                         Text(

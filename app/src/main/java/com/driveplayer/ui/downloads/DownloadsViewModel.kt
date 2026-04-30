@@ -1,20 +1,17 @@
 package com.driveplayer.ui.downloads
 
-import android.app.DownloadManager
+import android.app.Application
 import android.net.Uri
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.driveplayer.data.model.DriveFile
 import com.driveplayer.di.AppModule
 import com.driveplayer.player.DownloadEntry
+import com.driveplayer.player.DownloadService
 import com.driveplayer.player.DownloadStatus
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -37,169 +34,71 @@ internal fun formatBytes(bytes: Long): String = when {
     else                    -> "$bytes B"
 }
 
-private const val MAX_CONCURRENT = 1
-
-class DownloadsViewModel : ViewModel() {
+/**
+ * Pure UI binder. The download QUEUE and DownloadManager polling now live in
+ * [DownloadService] so they keep advancing while the app is closed; this VM
+ * just renders state and forwards user actions.
+ *
+ * Live byte progress is read from [AppModule.liveDownloadProgress], which the
+ * service writes to every ~500 ms. Terminal entries (COMPLETED/FAILED/CANCELLED)
+ * carry their final byte counts in [DownloadEntry] itself.
+ */
+class DownloadsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = AppModule.downloadStore
     private val dm    = AppModule.driveDownloadManager
+    private val live  = AppModule.liveDownloadProgress
 
-    private val _downloads = MutableStateFlow<List<DownloadProgress>>(emptyList())
-    val downloads: StateFlow<List<DownloadProgress>> = _downloads
-
-    init {
-        viewModelScope.launch {
-            reconcileOnStartup()
-            syncFromStore()   // collects forever — must run after reconcile
-        }
-        viewModelScope.launch { pollAndAdvanceQueue() }
-    }
-
-    // ── Startup reconciliation ────────────────────────────────────────────────
-    // Fix up any in-flight entries left over from a previous app session.
-
-    private suspend fun reconcileOnStartup() {
-        store.downloads.first()
-            .filter { it.status == DownloadStatus.RUNNING }
-            .forEach { entry ->
-                if (entry.downloadManagerId < 0) {
-                    // Never actually submitted to DM — treat as still queued
-                    store.update(entry.fileId) { it.copy(status = DownloadStatus.QUEUED) }
-                    return@forEach
-                }
-                when (dm.queryStatus(entry.downloadManagerId)) {
-                    DownloadManager.STATUS_SUCCESSFUL -> {
-                        val uri = dm.getLocalUri(entry.downloadManagerId)?.toString()
-                        store.update(entry.fileId) { it.copy(status = DownloadStatus.COMPLETED, localPath = uri) }
-                    }
-                    DownloadManager.STATUS_FAILED -> {
-                        val (dl, total) = dm.queryProgress(entry.downloadManagerId)
-                        store.update(entry.fileId) {
-                            it.copy(status = DownloadStatus.FAILED, bytesDownloaded = dl, totalBytes = total.coerceAtLeast(0L))
-                        }
-                    }
-                    else -> {
-                        // DM no longer knows about it; re-queue so it gets re-submitted
-                        store.update(entry.fileId) { it.copy(status = DownloadStatus.QUEUED, downloadManagerId = -1L) }
-                    }
-                }
-            }
-    }
-
-    // ── Store sync ────────────────────────────────────────────────────────────
-    // Mirrors DataStore → _downloads, preserving live progress for RUNNING entries
-    // (bytes are written to _downloads directly in the poll loop, not to the store,
-    //  to avoid excessive DataStore writes every 500 ms).
-
-    private suspend fun syncFromStore() {
-        store.downloads.collect { entries ->
-            val current = _downloads.value.associateBy { it.entry.fileId }
-            _downloads.value = entries.map { entry ->
-                val existing = current[entry.fileId]
-                val keepInMemoryBytes = entry.status == DownloadStatus.RUNNING
+    val downloads: StateFlow<List<DownloadProgress>> =
+        combine(store.downloads, live) { entries, liveMap ->
+            entries.map { entry ->
+                val running = entry.status == DownloadStatus.RUNNING
+                val (dl, total) = if (running) liveMap[entry.fileId] ?: (entry.bytesDownloaded to entry.totalBytes)
+                                  else entry.bytesDownloaded to entry.totalBytes
                 DownloadProgress(
                     entry = entry,
-                    bytesDownloaded = if (keepInMemoryBytes) existing?.bytesDownloaded ?: 0L else entry.bytesDownloaded,
-                    totalBytes      = if (keepInMemoryBytes) existing?.totalBytes      ?: 0L else entry.totalBytes,
+                    bytesDownloaded = dl,
+                    totalBytes = total,
                 )
             }
-        }
-    }
-
-    // ── Queue + progress loop ─────────────────────────────────────────────────
-    // Single loop: start the next queued download when a slot is free,
-    // then refresh byte-progress for whatever is currently running.
-
-    private suspend fun pollAndAdvanceQueue() {
-        while (currentCoroutineContext().isActive) {
-            delay(500)
-
-            val snapshot = _downloads.value
-
-            // ── Advance queue ─────────────────────────────────────────────
-            val runningCount = snapshot.count { it.entry.status == DownloadStatus.RUNNING }
-            if (runningCount < MAX_CONCURRENT) {
-                val next = snapshot
-                    .filter { it.entry.status == DownloadStatus.QUEUED && it.entry.accessToken != null }
-                    .minByOrNull { it.entry.enqueuedAt }
-
-                if (next != null) {
-                    val entry = next.entry
-                    val dmId = dm.enqueue(
-                        DriveFile(id = entry.fileId, name = entry.title, mimeType = entry.mimeType),
-                        entry.accessToken!!
-                    )
-                    store.update(entry.fileId) { it.copy(downloadManagerId = dmId, status = DownloadStatus.RUNNING) }
-                }
-            }
-
-            // ── Poll running downloads ────────────────────────────────────
-            snapshot.filter { it.entry.status == DownloadStatus.RUNNING && it.entry.downloadManagerId >= 0 }
-                .forEach { dp ->
-                    when (dm.queryStatus(dp.entry.downloadManagerId)) {
-                        DownloadManager.STATUS_SUCCESSFUL -> {
-                            val uri = dm.getLocalUri(dp.entry.downloadManagerId)?.toString()
-                            store.update(dp.entry.fileId) {
-                                it.copy(status = DownloadStatus.COMPLETED, localPath = uri)
-                            }
-                        }
-                        DownloadManager.STATUS_FAILED -> {
-                            val (dl, total) = dm.queryProgress(dp.entry.downloadManagerId)
-                            store.update(dp.entry.fileId) {
-                                it.copy(status = DownloadStatus.FAILED, bytesDownloaded = dl, totalBytes = total.coerceAtLeast(0L))
-                            }
-                        }
-                        DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PENDING -> {
-                            val (downloaded, total) = dm.queryProgress(dp.entry.downloadManagerId)
-                            // Write bytes directly to _downloads — no DataStore write needed here.
-                            _downloads.update { list ->
-                                list.map {
-                                    if (it.entry.fileId == dp.entry.fileId)
-                                        it.copy(bytesDownloaded = downloaded, totalBytes = total.coerceAtLeast(0L))
-                                    else it
-                                }
-                            }
-                        }
-                        else -> {
-                            // DM dropped the download unexpectedly — re-queue
-                            store.update(dp.entry.fileId) { it.copy(status = DownloadStatus.QUEUED, downloadManagerId = -1L) }
-                        }
-                    }
-                }
-        }
-    }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // ── Actions ───────────────────────────────────────────────────────────────
 
     fun cancel(entry: DownloadEntry) {
-        if (entry.downloadManagerId >= 0) {
-            val (downloaded, total) = dm.queryProgress(entry.downloadManagerId)
-            dm.cancel(entry.downloadManagerId)
-            viewModelScope.launch {
+        viewModelScope.launch {
+            if (entry.downloadManagerId >= 0) {
+                val (downloaded, total) = dm.queryProgress(entry.downloadManagerId)
+                runCatching { dm.cancel(entry.downloadManagerId) }
                 store.update(entry.fileId) {
-                    it.copy(status = DownloadStatus.CANCELLED, bytesDownloaded = downloaded, totalBytes = total.coerceAtLeast(0L))
+                    it.copy(
+                        status = DownloadStatus.CANCELLED,
+                        bytesDownloaded = downloaded,
+                        totalBytes = total.coerceAtLeast(0L),
+                    )
                 }
-            }
-        } else {
-            viewModelScope.launch {
+            } else {
                 store.update(entry.fileId) { it.copy(status = DownloadStatus.CANCELLED) }
             }
+            live.value = live.value - entry.fileId
         }
     }
 
     fun delete(entry: DownloadEntry) {
-        if (entry.downloadManagerId >= 0) dm.cancel(entry.downloadManagerId)
+        if (entry.downloadManagerId >= 0) runCatching { dm.cancel(entry.downloadManagerId) }
         entry.localPath?.let { path ->
             val file = File(Uri.parse(path).path ?: return@let)
             if (file.exists()) file.delete()
         }
-        viewModelScope.launch { store.remove(entry.fileId) }
+        viewModelScope.launch {
+            store.remove(entry.fileId)
+            live.value = live.value - entry.fileId
+        }
     }
 
     fun retry(entry: DownloadEntry) {
         if (entry.accessToken == null) return
         viewModelScope.launch {
-            // Re-save as QUEUED with sentinel dmId — pollAndAdvanceQueue will enqueue it when a slot opens
             store.save(
                 entry.copy(
                     downloadManagerId = -1L,
@@ -210,6 +109,9 @@ class DownloadsViewModel : ViewModel() {
                     enqueuedAt = System.currentTimeMillis(),
                 )
             )
+            // Kick the service so it picks up the re-queued entry. Safe to call
+            // even if the service is already running — the launcher is idempotent.
+            DownloadService.start(getApplication())
         }
     }
 

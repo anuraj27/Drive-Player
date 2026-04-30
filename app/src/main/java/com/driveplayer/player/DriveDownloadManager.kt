@@ -21,7 +21,10 @@ class DriveDownloadManager(private val context: Context) {
             .setDescription("Drive Player")
             .addRequestHeader("Authorization", "Bearer $accessToken")
             .setDestinationUri(Uri.fromFile(destFile))
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            // Hide the system DownloadManager notification — DownloadService
+            // posts our own ongoing + completion notifications, so showing both
+            // is redundant noise. Requires DOWNLOAD_WITHOUT_NOTIFICATION permission.
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN)
             .setAllowedOverMetered(true)
 
         return dm.enqueue(request)

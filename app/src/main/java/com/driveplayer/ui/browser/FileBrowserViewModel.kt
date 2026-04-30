@@ -7,6 +7,7 @@ import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
 import com.driveplayer.di.AppModule
 import com.driveplayer.player.DownloadEntry
+import com.driveplayer.player.DownloadService
 import com.driveplayer.player.DownloadStatus
 import com.driveplayer.player.PinnedFolder
 import com.driveplayer.player.WatchEntry
@@ -181,8 +182,8 @@ class FileBrowserViewModel(
 
     fun downloadFile(file: DriveFile) {
         viewModelScope.launch {
-            // downloadManagerId = -1 sentinel: DownloadsViewModel.pollAndAdvanceQueue()
-            // will call dm.enqueue() when a download slot opens, respecting MAX_CONCURRENT.
+            // downloadManagerId = -1 sentinel: the DownloadService queue loop will
+            // call dm.enqueue() when a download slot opens, respecting MAX_CONCURRENT.
             AppModule.downloadStore.save(
                 DownloadEntry(
                     fileId = file.id,
@@ -194,6 +195,9 @@ class FileBrowserViewModel(
                     enqueuedAt = System.currentTimeMillis(),
                 )
             )
+            // Wake the foreground service so the queue keeps advancing even if
+            // the user immediately backgrounds or closes the app. Idempotent.
+            DownloadService.start(AppModule.appContext)
         }
     }
 

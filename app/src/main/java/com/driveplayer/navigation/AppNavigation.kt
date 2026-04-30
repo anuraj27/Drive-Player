@@ -1,6 +1,7 @@
 package com.driveplayer.navigation
 
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
@@ -31,10 +32,27 @@ fun AppNavigation() {
     var activeTab      by remember { mutableStateOf(HomeTab.LOCAL) }
     var playerSession  by remember { mutableIntStateOf(0) }
 
+    // Consume one-shot tab requests posted by deep links (e.g. tapping the
+    // "Download complete" notification). MainActivity writes the requested tab
+    // name to AppModule.requestedHomeTab; we resolve it back to the enum, switch
+    // tabs, force-pop to Home if the user is in a player, and then clear the flag.
+    val requestedTabName by AppModule.requestedHomeTab.collectAsStateWithLifecycle()
+    LaunchedEffect(requestedTabName) {
+        val name = requestedTabName ?: return@LaunchedEffect
+        val tab = runCatching { HomeTab.valueOf(name) }.getOrNull()
+        if (tab != null) {
+            activeTab = tab
+            if (currentScreen !is Screen.Home) {
+                currentScreen = Screen.Home
+            }
+        }
+        AppModule.requestedHomeTab.value = null
+    }
+
     when (val screen = currentScreen) {
         is Screen.Home -> {
             HomeScreen(
-                initialTab = activeTab,
+                selectedTab = activeTab,
                 onTabChanged = { activeTab = it },
                 localContent = {
                     LocalBrowserScreen(

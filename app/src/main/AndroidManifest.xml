@@ -6,6 +6,16 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Background downloads: a foreground service hosts the queue loop and
+         progress notification, so downloads keep advancing after the user
+         leaves the app. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Lets us pass DownloadManager.Request.VISIBILITY_HIDDEN so the system
+         DownloadManager doesn't post its own notification on top of ours. -->
+    <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -26,6 +36,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Foreground service that advances the download queue and posts the
+             live progress notification while the app is closed. dataSync is the
+             closest official type for "downloading user-requested files". -->
+        <service
+            android:name=".player.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

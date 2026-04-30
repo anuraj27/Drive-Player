@@ -9,7 +9,7 @@ A modern Android video player that streams videos directly from your Google Driv
 - **Automatic OAuth refresh**: 401 responses transparently refresh the Drive token (both for REST calls and the libVLC streaming proxy) — long sessions never get stuck on expired credentials.
 - **libVLC Playback Engine**: Wide codec coverage including HEVC, AV1, complex ASS, and PGS subtitles.
 - **Local Library**: MediaStore-backed local video browser with folder grouping.
-- **Offline Downloads**: Queue downloads of any Drive video, with progress tracking, retry, and cancel — and resume from where you left off the next time you play them.
+- **Offline Downloads**: Queue downloads of any Drive video, with progress tracking, retry, and cancel — and resume from where you left off the next time you play them. Downloads keep running in the background (foreground service + live progress notification) even after you close the app, with a one-shot "Download complete" notification per file that deep-links straight into the Downloads tab.
 - **Continue Watching**: Resume any cloud video right where you left off; reopens refetch sibling files so external `.srt` auto-attach still works.
 - **VLC-like Gestures**:
   - Left vertical swipe: Brightness
@@ -101,6 +101,8 @@ app/src/main/java/com/driveplayer/
 │   ├── DriveAuthProxy.kt            # Localhost Bearer-injecting proxy for libVLC
 │   ├── DriveDownloadManager.kt      # Wraps Android DownloadManager
 │   ├── DownloadStore.kt             # DataStore persistence for downloads
+│   ├── DownloadService.kt           # Foreground service: queue advancement + reconcile + notifications
+│   ├── DownloadNotifications.kt     # Channels + builders for progress / completion / failure alerts
 │   ├── PinnedFolderStore.kt         # DataStore persistence for pinned folders
 │   ├── WatchHistoryStore.kt         # DataStore persistence for Continue Watching
 │   └── PlaybackPositionStore.kt     # SharedPreferences resume positions
