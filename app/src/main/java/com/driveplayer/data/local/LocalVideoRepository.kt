@@ -6,6 +6,7 @@ import android.os.Build
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Scans device videos via MediaStore and groups them by folder.
@@ -13,10 +14,27 @@ import kotlinx.coroutines.withContext
 class LocalVideoRepository(private val context: Context) {
 
     /**
+     * Wraps a suspending block in a [Result] but RETHROWS [CancellationException]
+     * so structured concurrency stays intact. See the equivalent helper in
+     * [com.driveplayer.data.remote.DriveRepository] for the full rationale —
+     * tl;dr `kotlin.runCatching` would swallow cancellation and let the
+     * VM's `onFailure` lambda paint a "Canceled" error onto the UI when the
+     * user is just typing fast.
+     */
+    private inline fun <T> safeCall(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+
+    /**
      * Returns all video files on the device, grouped by parent folder.
      */
     suspend fun getVideoFolders(): Result<List<VideoFolder>> = withContext(Dispatchers.IO) {
-        runCatching {
+        safeCall {
             val videos = scanVideos()
             videos
                 .groupBy { it.folderPath }
@@ -37,9 +55,38 @@ class LocalVideoRepository(private val context: Context) {
      */
     suspend fun getVideosInFolder(folderPath: String): Result<List<LocalVideo>> =
         withContext(Dispatchers.IO) {
-            runCatching {
+            safeCall {
                 scanVideos().filter { it.folderPath == folderPath }
                     .sortedBy { it.title.lowercase() }
+            }
+        }
+
+    /**
+     * Tokenised AND substring search across the user's local video library.
+     *
+     * Each whitespace-separated word in [query] must appear (case-insensitive)
+     * either in the file's title OR its folder name OR its full path. This lets
+     * "school 2024" find "Math Lecture.mp4" inside "/storage/.../School 2024/"
+     * even though no single field contains the full query string.
+     *
+     * Results are sorted by recency (DATE_MODIFIED desc) — same MediaStore order
+     * as the underlying scan, since for a search the user usually wants the
+     * latest matching file.
+     */
+    suspend fun searchVideos(query: String): Result<List<LocalVideo>> =
+        withContext(Dispatchers.IO) {
+            safeCall {
+                val tokens = query.trim().split(Regex("\\s+"))
+                    .filter { it.length >= 2 }
+                    .map { it.lowercase() }
+                if (tokens.isEmpty()) return@safeCall emptyList()
+
+                scanVideos().filter { v ->
+                    // Match against a single concatenated haystack so a token
+                    // can hit the title OR folder OR path interchangeably.
+                    val haystack = "${v.title} ${v.folderName} ${v.path}".lowercase()
+                    tokens.all { tok -> haystack.contains(tok) }
+                }
             }
         }
 

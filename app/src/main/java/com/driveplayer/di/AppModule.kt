@@ -6,6 +6,7 @@ import com.driveplayer.data.local.LocalVideoRepository
 import com.driveplayer.player.DownloadStore
 import com.driveplayer.player.DriveDownloadManager
 import com.driveplayer.player.PinnedFolderStore
+import com.driveplayer.player.RecentSearchStore
 import com.driveplayer.player.WatchHistoryStore
 import com.driveplayer.data.remote.DriveApiService
 import com.driveplayer.data.remote.DriveRepository
@@ -57,6 +58,10 @@ object AppModule {
 
     val downloadStore: DownloadStore by lazy {
         DownloadStore(appContext)
+    }
+
+    val recentSearchStore: RecentSearchStore by lazy {
+        RecentSearchStore(appContext)
     }
 
     val driveDownloadManager: DriveDownloadManager by lazy {

@@ -10,9 +10,12 @@ import com.driveplayer.player.DownloadEntry
 import com.driveplayer.player.DownloadService
 import com.driveplayer.player.DownloadStatus
 import com.driveplayer.player.PinnedFolder
+import com.driveplayer.player.RecentSearchStore
 import com.driveplayer.player.WatchEntry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -62,6 +65,23 @@ class FileBrowserViewModel(
     val searchState: StateFlow<BrowserState?> = _searchState
 
     private var searchDebounceJob: Job? = null
+
+    /** The canonicalised (trimmed) query that is currently scheduled or has
+     *  already been sent to Drive. Used to coalesce duplicate work caused by
+     *  whitespace-only edits (trailing space, autocorrect re-emit) and by
+     *  upstream state-flow re-collection — both produce a different RAW
+     *  string but an identical query, and without this guard we cancel a
+     *  good in-flight call only to re-fire the same one (visible in logcat
+     *  as `HTTP FAILED: java.io.IOException: Canceled` followed by a 200
+     *  with the exact same URL ~400 ms later). */
+    private var inFlightQuery: String? = null
+
+    /** Recent cloud search queries (newest first, max 8). Populated after a
+     *  successful search; surfaced as quick-fill chips when the search bar is
+     *  focused with an empty query. */
+    val recentSearches: StateFlow<List<String>> =
+        AppModule.recentSearchStore.recents(RecentSearchStore.Namespace.CLOUD)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // ── Pinned folders ───────────────────────────────────────────────────────
 
@@ -150,21 +170,95 @@ class FileBrowserViewModel(
         _isSearchActive.value = false
         _searchQuery.value = ""
         _searchState.value = null
+        inFlightQuery = null
     }
 
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
-        searchDebounceJob?.cancel()
-        if (query.isBlank()) {
+        val normalized = query.trim()
+
+        // 1-character queries match almost every file in Drive (because
+        // `name contains 'a'` is a word-prefix match) and are almost always
+        // accidental — skip them entirely instead of round-tripping the
+        // network just to cancel ourselves on the next keystroke.
+        if (normalized.length < 2) {
+            searchDebounceJob?.cancel()
             _searchState.value = null
+            inFlightQuery = null
             return
         }
+
+        // Coalesce duplicates: if the canonical query equals the one we
+        // already scheduled / sent, do nothing. Critically, do NOT cancel
+        // the existing job — otherwise a trailing-space edit would still
+        // flap the network call.
+        if (normalized == inFlightQuery) return
+
+        searchDebounceJob?.cancel()
+        inFlightQuery = normalized
         searchDebounceJob = viewModelScope.launch {
             delay(350)
             _searchState.value = BrowserState.Loading
-            repo.searchVideos(query)
-                .onSuccess { _searchState.value = BrowserState.Success(it) }
-                .onFailure { _searchState.value = BrowserState.Error(it.message ?: "Unknown error") }
+            val result = repo.searchVideos(normalized)
+            // Defensive guard: if the user has typed past this query (so we're
+            // no longer the active in-flight) or the coroutine has been
+            // cancelled, drop the result on the floor instead of painting a
+            // stale Success/Error onto the UI. The repo already rethrows
+            // CancellationException, but a result could arrive a hair before
+            // the next setSearchQuery call cancels us.
+            if (!isActive || inFlightQuery != normalized) return@launch
+            result
+                .onSuccess {
+                    _searchState.value = BrowserState.Success(it)
+                    // Only persist queries that actually matched something — saves
+                    // the user from a recents list polluted with typos.
+                    if (it.isNotEmpty()) {
+                        AppModule.recentSearchStore.record(
+                            RecentSearchStore.Namespace.CLOUD,
+                            normalized,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    // Belt-and-suspenders: a stray IOException("Canceled") from
+                    // OkHttp should never reach the user. The repo's safeCall
+                    // already rethrows CancellationException, so this is mostly
+                    // a guard against the OkHttp-level cancel string.
+                    if (e is CancellationException || e.isOkHttpCanceled()) {
+                        if (inFlightQuery == normalized) inFlightQuery = null
+                        return@launch
+                    }
+                    _searchState.value = BrowserState.Error(e.message ?: "Unknown error")
+                    // Allow retry on the same query: clear the dedupe cache so
+                    // re-typing (or backspace+retype) re-launches the request.
+                    if (inFlightQuery == normalized) inFlightQuery = null
+                }
+        }
+    }
+
+    private fun Throwable.isOkHttpCanceled(): Boolean =
+        this is java.io.IOException && message == "Canceled"
+
+    /**
+     * Refetches the parent folder of [file] so the player gets a sibling list
+     * (used for external `.srt` auto-attach). Fast path returns the cached
+     * folder content; falls back to an empty list on any error so the user
+     * still gets to play the file even if the sibling fetch fails.
+     */
+    suspend fun fetchSiblingsFor(file: DriveFile): List<DriveFile> {
+        val parentId = file.parents?.firstOrNull() ?: return emptyList()
+        return repo.listFolder(parentId).getOrNull().orEmpty()
+    }
+
+    fun removeRecentSearch(query: String) {
+        viewModelScope.launch {
+            AppModule.recentSearchStore.remove(RecentSearchStore.Namespace.CLOUD, query)
+        }
+    }
+
+    fun clearRecentSearches() {
+        viewModelScope.launch {
+            AppModule.recentSearchStore.clear(RecentSearchStore.Namespace.CLOUD)
         }
     }
 

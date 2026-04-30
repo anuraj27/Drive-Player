@@ -27,14 +27,14 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 | `data/auth/GoogleSignInHelper.kt` | OAuth Drive-readonly token via `GoogleAuthUtil`. Caches per-email clients for multi-account switching. `invalidateToken(token)` is used by `AppModule.refreshAccessToken()` so a future `getToken()` returns a fresh value. |
 | `data/local/AccountPreferences.kt` | DataStore-backed list of `SavedAccount` (email + displayName + id), plus the active account email. |
 | `data/remote/DriveApiService.kt` | Retrofit interface — `listFiles(q, fields=…, pageSize, orderBy, pageToken)`. **Fields include `owners(displayName,emailAddress)` and `parents`** (the latter so a `WatchEntry` can later refetch its sibling files). |
-| `data/remote/DriveRepository.kt` | `listFolder` (My Drive), `getSharedFiles` (Shared with me), `searchVideos`. All paginate to completion and sort folders-first. Search escapes both `\\` and `'` to keep the Drive query safe. |
+| `data/remote/DriveRepository.kt` | `listFolder` (My Drive), `getSharedFiles` (Shared with me), `searchVideos`. `listFolder`/`getSharedFiles` paginate to completion and sort folders-first. **`searchVideos` tokenises** the query on whitespace, builds a `name contains 'tok'` clause per word joined by `and` (so multi-word queries hit any word-prefix in the file name), and **caps pagination at `MAX_SEARCH_PAGES = 5`** (≈ 500 results) to keep latency bounded on huge drives. Both `\\` and `'` are escaped per token. |
 | `data/model/DriveFile.kt` | Data class with derived `isFolder`/`isVideo`/`isSrt` and `formattedSize`. Includes `parents: List<String>?`. |
 
 ### Local data
 | Path | Purpose |
 |---|---|
 | `data/local/LocalVideo.kt` | `LocalVideo` + `VideoFolder` data classes. `LocalVideo.positionKey: String?` is an explicit override for the resume key (used by played downloads where MediaStore id is `-1`). |
-| `data/local/LocalVideoRepository.kt` | MediaStore scan, grouped by folder, sorted by name. Filters out 0-duration entries. |
+| `data/local/LocalVideoRepository.kt` | MediaStore scan, grouped by folder, sorted by name. Filters out 0-duration entries. `searchVideos(q)` does a tokenised AND substring match across the concatenated `title + folderName + path` haystack so a single token can hit any of those fields. |
 
 ### Player runtime (libVLC)
 | Path | Purpose |
@@ -52,6 +52,7 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 | `player/DriveDownloadManager.kt` | Wraps Android `DownloadManager` with Drive's `?alt=media` URL + Authorization header + per-file destination in `getExternalFilesDir`. |
 | `player/DownloadService.kt` | Foreground service that owns the queue advancement + DownloadManager poll loop + reconcile-on-startup. Posts an ongoing progress notification while at least one entry is QUEUED/RUNNING and self-stops when the queue is empty. `START_STICKY` so a kill mid-download is auto-resumed. Its `ACTION_CANCEL_ALL` is wired to the notification's "Cancel all" action. |
 | `player/DownloadNotifications.kt` | Notification channel definitions (`drive_downloads_progress` LOW, `drive_downloads_completed` DEFAULT) and builders for the ongoing FGS notification + per-file completion / failure alerts. Uses Android's built-in `stat_sys_download` icons. |
+| `player/RecentSearchStore.kt` | DataStore-backed list of recent search queries, partitioned by `Namespace.LOCAL` and `Namespace.CLOUD` (separate histories so a Drive query never appears as a suggestion on the Local tab and vice-versa). Newest-first, capped at `MAX_ENTRIES = 8`, case-insensitive de-duped on insert. |
 
 ### Player UI components
 | Path | Purpose |
@@ -67,9 +68,9 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 | Path | Purpose |
 |---|---|
 | `ui/home/HomeScreen.kt` | Bottom navigation: `LOCAL`, `CLOUD`, `DOWNLOADS`. Crossfade between content. |
-| `ui/local/LocalBrowserScreen.kt` + `LocalBrowserViewModel.kt` | Permission gate (READ_MEDIA_VIDEO ≥ 33, else READ_EXTERNAL_STORAGE), folder list, video list. |
+| `ui/local/LocalBrowserScreen.kt` + `LocalBrowserViewModel.kt` | Permission gate (READ_MEDIA_VIDEO ≥ 33, else READ_EXTERNAL_STORAGE), folder list, video list. **Search bar** (top-bar search icon) with 250 ms debounce → tokenised AND match on title/folder/path; result rows show "duration · size · folder" as the subtitle so users can disambiguate identically-named files. Recent local searches surface as removable chips when the field is blank. |
 | `ui/cloud/CloudScreen.kt` + `CloudViewModel.kt` | Drives connection state machine. `connectWith(token, email, …)` writes the active credentials into `AppModule` so the OkHttp interceptor / 401 Authenticator / `DriveAuthProxy` all read the same token. |
-| `ui/browser/FileBrowserScreen.kt` + `FileBrowserViewModel.kt` | My Drive / Shared tabs, breadcrumb path, search w/ 350 ms debounce, Continue Watching carousel (root only), Pinned Folders chip row (root only), per-file download icon, account dropdown w/ switch/add/logout. Continue-Watching reopens refetch the parent folder via `repo.listFolder(parentId)` so external `.srt` auto-attach still works. |
+| `ui/browser/FileBrowserScreen.kt` + `FileBrowserViewModel.kt` | My Drive / Shared tabs, breadcrumb path, search w/ 350 ms debounce, Continue Watching carousel (root only), Pinned Folders chip row (root only), per-file download icon, account dropdown w/ switch/add/logout. Continue-Watching reopens refetch the parent folder via `repo.listFolder(parentId)` so external `.srt` auto-attach still works. Cloud search results also expose a download icon and refetch siblings on open (so a `.srt` next to the matched file is still picked up by the player). Recent cloud searches surface as removable chips when the field is blank. |
 | `ui/downloads/DownloadsScreen.kt` + `DownloadsViewModel.kt` | Shows queued/running/completed/failed/cancelled. Single-active poll loop (`MAX_CONCURRENT = 1`) advances the queue and refreshes byte progress every 500 ms. Reconciles in-flight DM ids on app start. The "play" callback now passes `(uri, fileId)` so `AppNavigation` can build a stable `LocalVideo.positionKey`. |
 | `ui/login/LoginViewModel.kt` | Owned by CloudScreen — silent sign-in, intent result handling, sign-out. (LoginScreen.kt was removed; CloudScreen has its own embedded `ConnectScreen`.) |
 
@@ -138,10 +139,30 @@ This file is the persistent memory for the AI agent. Read it first; update it as
 - `getAccessTokenForEmail(email)` works via `AccountManager` for *any* Google account on the device — doesn't require an active GSI session, which is what makes silent reconnect across accounts reliable.
 - `signOutCurrentClient()` is invoked before launching the sign-in intent for "add account" so Google Play Services shows the picker instead of pre-selecting the current user.
 
+### Search
+
+#### Cloud (Google Drive)
+- 350 ms debounce in `FileBrowserViewModel.setSearchQuery`.
+- Repository tokenises on whitespace and emits one `name contains 'tok'` clause per word, joined with `and`. Drive's `name contains` is **case-insensitive word-prefix** matching, so `"summer beach 2023"` matches *Summer Vacation Beach 2023.mp4* even though no contiguous substring matches the full phrase.
+- Pagination capped at 5 pages (`MAX_SEARCH_PAGES`) — first page is the most relevant under Drive's default ordering, and unbounded pagination on a 50k-file account would hang the UI for ~10 s otherwise.
+- A successful, non-empty search records the query into `RecentSearchStore[CLOUD]` (so typos and zero-result queries don't pollute the chip row).
+- On a result tap, the screen calls `vm.fetchSiblingsFor(file)` (= `repo.listFolder(file.parents.first())`) before navigating, so external `.srt` auto-attach still works for files reached via search. The fetch is best-effort: a failure or missing parent still opens the player with empty siblings.
+- Result rows expose the per-file download icon (parity with browse).
+
+#### Local (MediaStore)
+- 250 ms debounce in `LocalBrowserViewModel.setSearchQuery`.
+- `LocalVideoRepository.searchVideos` runs a tokenised AND match against the lowercased haystack `title + folderName + path`, so a single token hits any of those fields. Results are returned in MediaStore scan order (DATE_MODIFIED desc).
+- A successful, non-empty search records the query into `RecentSearchStore[LOCAL]`.
+- Result rows show "duration · size · folder" so identically-named files in different folders are visually distinct.
+
+#### Recents UX
+- Both surfaces share `RecentSearchStore` but use separate `Namespace`s (`LOCAL`, `CLOUD`). When the search field is empty, the screen renders a `FlowRow` of `AssistChip`s (newest first, max 8). Tapping a chip refills the query; the trailing × removes a single entry; a top-right "Clear" button wipes the namespace.
+
 ## 📌 Current State
 - ✅ Multi-account Google Sign-In with cached per-email clients.
 - ✅ **Automatic OAuth token refresh** on 401 — both Retrofit/OkHttp and the libVLC streaming proxy.
-- ✅ Google Drive browser (My Drive + Shared with me + Search w/ 350 ms debounce).
+- ✅ Google Drive browser (My Drive + Shared with me + tokenised search w/ 350 ms debounce, sibling-aware open, recent-search chips).
+- ✅ Local video search w/ 250 ms debounce — tokenised AND match across title / folder / path, recent-search chips.
 - ✅ Pinned folders (long-press in browser).
 - ✅ Continue Watching carousel — refetches siblings on reopen so external `.srt` auto-attach works.
 - ✅ Per-file Download to local storage with queue, retry, cancel, delete.

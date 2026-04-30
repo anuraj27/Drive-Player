@@ -4,7 +4,8 @@ A modern Android video player that streams videos directly from your Google Driv
 
 ## 🚀 Features
 
-- **Google Drive Integration**: Browse, search, pin folders, and stream videos directly from your Google Drive (My Drive + Shared with me).
+- **Google Drive Integration**: Browse, pin folders, and stream videos directly from your Google Drive (My Drive + Shared with me).
+- **Smart Search** (cloud + local): Tokenised, multi-word search — type "summer beach 2023" and it matches *Summer Vacation Beach 2023.mp4*. Local search runs across title, folder name, and full path; cloud search hits Drive's `name` field with one prefix-match clause per word and returns videos from anywhere in the account. Recent queries are remembered separately for each surface and surface as one-tap chips.
 - **Multi-account**: Sign in with multiple Google accounts and switch between them without re-authenticating.
 - **Automatic OAuth refresh**: 401 responses transparently refresh the Drive token (both for REST calls and the libVLC streaming proxy) — long sessions never get stuck on expired credentials.
 - **libVLC Playback Engine**: Wide codec coverage including HEVC, AV1, complex ASS, and PGS subtitles.
@@ -103,6 +104,7 @@ app/src/main/java/com/driveplayer/
 │   ├── DownloadStore.kt             # DataStore persistence for downloads
 │   ├── DownloadService.kt           # Foreground service: queue advancement + reconcile + notifications
 │   ├── DownloadNotifications.kt     # Channels + builders for progress / completion / failure alerts
+│   ├── RecentSearchStore.kt         # DataStore persistence for recent search queries (local + cloud namespaces)
 │   ├── PinnedFolderStore.kt         # DataStore persistence for pinned folders
 │   ├── WatchHistoryStore.kt         # DataStore persistence for Continue Watching
 │   └── PlaybackPositionStore.kt     # SharedPreferences resume positions

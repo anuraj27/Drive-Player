@@ -4,6 +4,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -60,6 +62,7 @@ fun FileBrowserScreen(
     val isSearchActive    by vm.isSearchActive.collectAsStateWithLifecycle()
     val searchQuery       by vm.searchQuery.collectAsStateWithLifecycle()
     val searchState       by vm.searchState.collectAsStateWithLifecycle()
+    val recentSearches    by vm.recentSearches.collectAsStateWithLifecycle()
     val pinnedFolders     by vm.pinnedFolders.collectAsStateWithLifecycle()
     val recentlyWatched   by vm.recentlyWatched.collectAsStateWithLifecycle()
     val downloadedFileIds by vm.downloadedFileIds.collectAsStateWithLifecycle()
@@ -261,9 +264,23 @@ fun FileBrowserScreen(
                 SearchResultsContent(
                     query = searchQuery,
                     searchState = searchState,
+                    recentSearches = recentSearches,
                     downloadedFileIds = downloadedFileIds,
                     downloadingFileIds = downloadingFileIds,
-                    onVideoClick = { file -> onVideoClick(file, emptyList()) }
+                    onRecentClick = { vm.setSearchQuery(it) },
+                    onRecentRemove = { vm.removeRecentSearch(it) },
+                    onClearRecents = { vm.clearRecentSearches() },
+                    onVideoClick = { file ->
+                        // Refetch the parent folder so an external `.srt` next to
+                        // the video is still picked up by the player. Don't block
+                        // the navigation on it — open an empty-sibling player if
+                        // the fetch fails or no parent is available.
+                        coroutineScope.launch {
+                            val siblings = vm.fetchSiblingsFor(file)
+                            onVideoClick(file, siblings)
+                        }
+                    },
+                    onDownload = { vm.downloadFile(it) },
                 )
             } else {
                 BrowseContent(
@@ -420,20 +437,37 @@ private fun BrowseContent(
 private fun SearchResultsContent(
     query: String,
     searchState: BrowserState?,
+    recentSearches: List<String>,
     downloadedFileIds: Set<String>,
     downloadingFileIds: Set<String>,
+    onRecentClick: (String) -> Unit,
+    onRecentRemove: (String) -> Unit,
+    onClearRecents: () -> Unit,
     onVideoClick: (DriveFile) -> Unit,
+    onDownload: (DriveFile) -> Unit,
 ) {
     when {
         query.isBlank() -> {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(56.dp))
-                Spacer(Modifier.height(12.dp))
-                Text("Type to search your Drive videos", color = TextMuted)
+            // Two states share the empty-query view: a fresh user with no history
+            // (centered hint) and a returning user who sees their recent queries
+            // as chips for one-tap re-search.
+            if (recentSearches.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(56.dp))
+                    Spacer(Modifier.height(12.dp))
+                    Text("Type to search your Drive videos", color = TextMuted)
+                }
+            } else {
+                RecentSearchesPanel(
+                    recents = recentSearches,
+                    onPick = onRecentClick,
+                    onRemove = onRecentRemove,
+                    onClear = onClearRecents,
+                )
             }
         }
 
@@ -491,9 +525,69 @@ private fun SearchResultsContent(
                             isDownloading = downloadingFileIds.contains(file.id),
                             onClick = { onVideoClick(file) },
                             onLongClick = {},
+                            // Search results now expose the same per-row download
+                            // affordance as the browse screen so users don't have
+                            // to navigate to the parent folder first.
+                            onDownload = { onDownload(file) },
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RecentSearchesPanel(
+    recents: List<String>,
+    onPick: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.History, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Recent searches",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextSecondary,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onClear) {
+                Text("Clear", color = TextMuted, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            recents.forEach { q ->
+                AssistChip(
+                    onClick = { onPick(q) },
+                    label = { Text(q, color = TextPrimary) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(14.dp))
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { onRemove(q) }, modifier = Modifier.size(20.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Remove", tint = TextMuted, modifier = Modifier.size(14.dp))
+                        }
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = SurfaceVariant,
+                        labelColor = TextPrimary,
+                    ),
+                    border = null,
+                )
             }
         }
     }
