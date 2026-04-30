@@ -2,6 +2,7 @@ package com.driveplayer.ui.player.controllers
 
 import android.content.Context
 import android.net.Uri
+import com.driveplayer.data.SettingsStore
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
@@ -11,6 +12,8 @@ import com.driveplayer.player.PlaybackPositionStore
 import com.driveplayer.player.WatchEntry
 import com.driveplayer.player.WatchHistoryStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,6 +66,7 @@ class PlayerController(
     val mediaPlayer: MediaPlayer = MediaPlayer(libVlc)
 
     private val positionStore = PlaybackPositionStore(context)
+    private val playbackStateStore = AppModule.playbackStateStore
     private var currentVideoFile: DriveFile? = null
     private var currentSubtitleFile: DriveFile? = null
     private var currentLocalVideo: LocalVideo? = null
@@ -76,8 +80,42 @@ class PlayerController(
     // an explicit position (independent of the 5s threshold used for autosaved entries).
     @Volatile private var pendingResumeMs: Long = 0L
 
+    /** Loaded once per prepare in [prepareAndPlay] / [prepareAndPlayLocal] from the
+     *  per-file [PlaybackStateStore]. Applied at `LengthChanged` so it lands AFTER
+     *  the position seek and tracks have been enumerated. Nulled out after apply
+     *  to prevent a re-restore on a media restart (e.g. visual-settings commit). */
+    @Volatile private var pendingRestoreState: com.driveplayer.player.PlaybackState? = null
+
+    /** Set by [applyRestoredState] so [applySubtitleDefault] knows the user's
+     *  saved subtitle choice (which may be -1, i.e. "explicitly off") wins over
+     *  both the file's `default` flag and the global "Subtitles enabled by
+     *  default" toggle. Reset on every prepare. */
+    @Volatile private var hasRestoredSubtitleChoice: Boolean = false
+
+    /**
+     * ViewModel hook for the *non*-mediaplayer side of state restoration: audio
+     * and subtitle delays live in [SyncController]'s StateFlows so the in-player
+     * sliders can observe them. PlayerController writes to libVLC directly but
+     * has no SyncController reference, so we fan-out via this callback.
+     */
+    var onStateRestored: ((com.driveplayer.player.PlaybackState) -> Unit)? = null
+
     @Volatile private var isReleased = false
     private var pollJob: Job? = null
+
+    /**
+     * One-shot snapshot of user settings captured when the controller is built.
+     * Used to seed: default playback speed, network buffer, default subtitle
+     * styling, and the resume-from-last-position toggle. Settings only take
+     * effect on the next prepare — toggling them while a video is on screen
+     * does NOT retroactively change behaviour, which matches how VLC's
+     * "default" settings work.
+     *
+     * Made public so [PlayerViewModel] can re-use the same snapshot to seed
+     * [SyncController] sliders (avoids two separate DataStore reads racing).
+     */
+    val settingsSnapshot: SettingsStore.Snapshot =
+        runBlocking { AppModule.settingsStore.snapshot() }
 
     // Held open for the lifetime of the current local media — libVLC reads the fd lazily
     // on play(), so closing it eagerly produces "Bad file descriptor".
@@ -133,9 +171,11 @@ class PlayerController(
     // applies them to playback (libVLC 3.x can't change these mid-stream).
     @Volatile private var pendingContrast: Float = 1f
     @Volatile private var pendingSaturation: Float = 1f
-    @Volatile private var pendingSubtitleScalePercent: Int = 100
-    @Volatile private var pendingSubtitleColorRgb: Int = 0xFFFFFF
-    @Volatile private var pendingSubtitleBgOpacity: Int = 0
+    // Seeded from user settings — overridden at runtime via updateVisualSettings()
+    // when the user moves the in-player sliders.
+    @Volatile private var pendingSubtitleScalePercent: Int = settingsSnapshot.defaultSubtitleScale
+    @Volatile private var pendingSubtitleColorRgb: Int = settingsSnapshot.defaultSubtitleColor
+    @Volatile private var pendingSubtitleBgOpacity: Int = settingsSnapshot.defaultSubtitleBgAlpha
 
     /**
      * Snapshot the user's current visual preferences. Values are applied to the next
@@ -196,6 +236,9 @@ class PlayerController(
                 MediaPlayer.Event.Playing -> {
                     _isPlaying.value = true
                     _isBuffering.value = false
+                    // Subtitle tracks aren't enumerated until the media starts,
+                    // so disabling-by-default has to happen here, not at prepare.
+                    applySubtitleDefault()
                 }
                 MediaPlayer.Event.Paused -> _isPlaying.value = false
                 MediaPlayer.Event.Stopped -> _isPlaying.value = false
@@ -218,18 +261,33 @@ class PlayerController(
                     lengthKnown = _duration.value > 0L
                     // Restore saved position once duration is known. An explicit
                     // [pendingResumeMs] (set by restartWithCurrentOptions) takes priority
-                    // over the autosaved position (which has a 5s threshold).
+                    // over the autosaved position (which has a 5s threshold). The
+                    // autosaved seek is also gated by the user's "Resume playback"
+                    // setting — explicit resumes from restart are always honoured.
                     if (!hasSeekedToSavedPosition && lengthKnown) {
                         hasSeekedToSavedPosition = true
                         val explicit = pendingResumeMs
                         pendingResumeMs = 0L
                         when {
                             explicit > 0L -> mediaPlayer.time = explicit.coerceAtMost(_duration.value)
-                            else -> currentPositionKey?.let { key ->
+                            settingsSnapshot.resumePlayback -> currentPositionKey?.let { key ->
                                 val saved = positionStore.get(key)
                                 if (saved > 5_000L) mediaPlayer.time = saved
                             }
+                            else -> { /* user opted out of auto-resume */ }
                         }
+
+                        // Restore the rest of the per-file state (track choices,
+                        // delays, rate). Gated by the same resumePlayback toggle —
+                        // a user who turned that off doesn't expect any per-file
+                        // state to come back either.
+                        if (settingsSnapshot.resumePlayback) {
+                            pendingRestoreState?.let { state ->
+                                applyRestoredState(state)
+                                onStateRestored?.invoke(state)
+                            }
+                        }
+                        pendingRestoreState = null
                     }
                 }
                 MediaPlayer.Event.TimeChanged -> {
@@ -246,7 +304,15 @@ class PlayerController(
                         mediaPlayer.play()
                     } else {
                         _isPlaying.value = false
-                        currentPositionKey?.let { key -> positionStore.clear(key) }
+                        currentPositionKey?.let { key ->
+                            positionStore.clear(key)
+                            // The video has played to completion — drop the
+                            // per-file state too, otherwise the next playback
+                            // would try to restore tracks/delays from a stale
+                            // record. Watch-history clear (below) follows the
+                            // same finished-the-video logic.
+                            scope.launch { playbackStateStore.clear(key) }
+                        }
                         currentVideoFile?.let { file ->
                             scope.launch { watchHistoryStore?.clear(file.id) }
                         }
@@ -284,7 +350,16 @@ class PlayerController(
                               catch (_: Exception) { return@launch }
                     if (pos - lastSaveMs >= 5_000L) {
                         // Persist resumable position for both local and cloud media.
-                        currentPositionKey?.let { key -> positionStore.save(key, pos) }
+                        currentPositionKey?.let { key ->
+                            positionStore.save(key, pos)
+                            // Plus the richer per-file player state (audio/sub
+                            // tracks, delays, rate, …). DataStore writes are
+                            // suspending so we hop scopes — the position write
+                            // above stays synchronous on SharedPrefs.
+                            capturePlaybackState()?.let { state ->
+                                scope.launch { playbackStateStore.save(key, state) }
+                            }
+                        }
                         // Watch-history (Continue Watching carousel) is cloud-only —
                         // local videos are surfaced through the LocalBrowser scan.
                         currentVideoFile?.let { file ->
@@ -341,6 +416,8 @@ class PlayerController(
         currentPositionKey = videoFile.id
         hasSeekedToSavedPosition = false
         lengthKnown = false
+        pendingRestoreState = runBlocking { playbackStateStore.get(videoFile.id) }
+        hasRestoredSubtitleChoice = false
 
         // Tear down any previous proxies before starting new ones.
         currentProxy?.stop(); currentProxy = null
@@ -354,8 +431,8 @@ class PlayerController(
         currentProxy = proxy
 
         val media = Media(libVlc, Uri.parse("http://127.0.0.1:${proxy.port}/")).apply {
-            setHWDecoderEnabled(true, false)
-            addOption(":network-caching=1500")
+            setHWDecoderEnabled(settingsSnapshot.hardwareAcceleration == "AUTO", false)
+            addOption(":network-caching=${settingsSnapshot.networkCacheMs}")
         }
         applyVisualOptions(media)
         mediaPlayer.media = media
@@ -376,6 +453,9 @@ class PlayerController(
         }
 
         mediaPlayer.play()
+        applyDefaultSpeed()
+        applyVolumeBoost()
+        applyEqualizer()
     }
 
     fun prepareAndPlayLocal(localVideo: LocalVideo) {
@@ -392,6 +472,8 @@ class PlayerController(
             ?: if (localVideo.id >= 0) "local_${localVideo.id}" else null
         hasSeekedToSavedPosition = false
         lengthKnown = false
+        pendingRestoreState = currentPositionKey?.let { runBlocking { playbackStateStore.get(it) } }
+        hasRestoredSubtitleChoice = false
 
         // Close any pfd held from a previous local playback.
         currentLocalPfd?.let { try { it.close() } catch (_: Exception) {} }
@@ -419,11 +501,171 @@ class PlayerController(
             currentLocalPfd = pfd
             Media(libVlc, pfd.fileDescriptor)
         }
-        media.setHWDecoderEnabled(true, false)
+        media.setHWDecoderEnabled(settingsSnapshot.hardwareAcceleration == "AUTO", false)
         applyVisualOptions(media)
         mediaPlayer.media = media
         media.release()
         mediaPlayer.play()
+        applyDefaultSpeed()
+        applyVolumeBoost()
+        applyEqualizer()
+    }
+
+    /**
+     * Snap the player rate to the user's "default playback speed" setting at
+     * the start of every prepare. This is a no-op for the default 1.0× value;
+     * for a user-configured 1.25× / 1.5× it makes the speed sticky across
+     * playback sessions without us having to persist it per-video.
+     *
+     * Mid-playback rate changes (the 1×/1.25×/1.5× chip in PlayerScreen) just
+     * call `mediaPlayer.rate = …` directly and are session-scoped.
+     */
+    private fun applyDefaultSpeed() {
+        val rate = settingsSnapshot.defaultPlaybackSpeed
+        if (kotlin.math.abs(rate - 1f) < 0.001f) return
+        try {
+            mediaPlayer.rate = rate
+            _playbackSpeed.value = rate
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Push the user's volume-boost preference to libVLC. libVLC's `volume`
+     * accepts 0..200 — anything above 100 amplifies in software. We only
+     * touch the volume when the boost is non-trivial (>2 % above 100); the
+     * default 1.0 path leaves the OS / AudioManager fully in charge so the
+     * physical volume rocker still feels right.
+     */
+    private fun applyVolumeBoost() {
+        val pct = (settingsSnapshot.volumeBoost * 100f).toInt().coerceIn(0, 200)
+        if (pct <= 102) return
+        try {
+            mediaPlayer.volume = pct
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Apply the user-selected libVLC equalizer preset. Off by default; turning
+     * it on installs the chosen preset on every new prepare. Wrapped in a try
+     * because libVLC throws on some odd device configs (notably Tegra-based
+     * tablets) — we'd rather skip EQ than crash the player there.
+     */
+    private fun applyEqualizer() {
+        if (!settingsSnapshot.equalizerEnabled) return
+        val idx = settingsSnapshot.equalizerPreset
+        if (idx < 0) return
+        try {
+            val eq = org.videolan.libvlc.MediaPlayer.Equalizer.createFromPreset(idx)
+            mediaPlayer.setEqualizer(eq)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Reconcile the subtitle-track-on-`Playing` state with the user's "Subtitles
+     * enabled by default" preference and the file's own metadata.
+     *
+     * libVLC's auto-selection rules: pick the track flagged `default=1` (MKV);
+     * otherwise pick the track matching `--sub-language=…`; otherwise leave
+     * subs OFF (`spuTrack = -1`). That third branch fires for many community
+     * rips that don't bother setting the default flag — the user has subs
+     * "enabled by default" but sees nothing.
+     *
+     * Behaviour:
+     *  - Toggle OFF → force `spuTrack = -1`, overriding any default the file
+     *    chose. User can still flip subs on from the Subtitle panel.
+     *  - Toggle ON  → keep libVLC's pick if it found one; otherwise fall back
+     *    to the first non-`-1` track we can see (`-1` is the "Disable" entry
+     *    libVLC always inserts at index 0 of `spuTracks`).
+     *
+     * Restored playback state takes precedence over both branches — see
+     * [applyRestoredState] which runs immediately before this in the
+     * `LengthChanged` flow.
+     */
+    private fun applySubtitleDefault() {
+        // Restored choice always wins — that's the user's most recent decision
+        // for *this* file, including "subs explicitly off" via spuTrack = -1.
+        if (hasRestoredSubtitleChoice) return
+
+        if (!settingsSnapshot.subtitlesEnabledByDefault) {
+            try { mediaPlayer.spuTrack = -1 } catch (_: Exception) {}
+            return
+        }
+        try {
+            if (mediaPlayer.spuTrack == -1) {
+                val tracks = mediaPlayer.spuTracks ?: return
+                val firstReal = tracks.firstOrNull { it.id != -1 } ?: return
+                mediaPlayer.spuTrack = firstReal.id
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Push the per-file state captured on a previous session back onto the
+     * native MediaPlayer. Tracks must be applied AFTER `LengthChanged` because
+     * libVLC enumerates them as part of media parse — earlier and the IDs
+     * don't exist yet. Delays and rate are pushed back into [SyncController]'s
+     * StateFlows via [onStateRestored] so the in-player sliders match.
+     *
+     * libVLC ignores `audioTrack`/`spuTrack` writes for unknown IDs (no
+     * exception), so a state from an older release of the same file with
+     * different track ordering simply falls back to the file's defaults.
+     */
+    private fun applyRestoredState(state: com.driveplayer.player.PlaybackState) {
+        try {
+            // -2 sentinel = no preference recorded (e.g. brand-new entry); only
+            // overwrite the player's current pick when we have a real saved id.
+            if (state.audioTrackId >= 0) {
+                mediaPlayer.audioTrack = state.audioTrackId
+            }
+            // Subtitle: -1 means "user explicitly disabled". Honour that as a
+            // valid restored choice (not the same as -2 = "no record").
+            if (state.subtitleTrackId == -1 || state.subtitleTrackId >= 0) {
+                mediaPlayer.spuTrack = state.subtitleTrackId
+                hasRestoredSubtitleChoice = true
+            }
+            mediaPlayer.audioDelay = state.audioDelayUs
+            mediaPlayer.spuDelay  = state.subtitleDelayUs
+            // Rate goes through the existing setter so the StateFlow + UI chip
+            // stays consistent.
+            if (kotlin.math.abs(state.playbackRate - 1f) > 0.001f) {
+                setSpeed(state.playbackRate)
+            }
+            // Re-attach a user-attached external SRT, if any. content:// URIs
+            // require a persisted permission grant to survive — we only call
+            // through; addSlave silently fails for revoked URIs.
+            state.externalSubtitleUri?.takeIf { it.isNotBlank() }?.let { uriStr ->
+                try {
+                    val uri = Uri.parse(uriStr)
+                    mediaPlayer.addSlave(
+                        org.videolan.libvlc.interfaces.IMedia.Slave.Type.Subtitle,
+                        uri,
+                        true,
+                    )
+                    currentExternalSubtitleUri = uri
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Snapshot of every persisted player setting at the moment of the call.
+     * Returns `null` for invalid native state (released, not yet playing) so
+     * the poll loop can skip the write instead of saving a row of zeros.
+     */
+    private fun capturePlaybackState(): com.driveplayer.player.PlaybackState? {
+        if (isReleased) return null
+        return try {
+            com.driveplayer.player.PlaybackState(
+                audioTrackId        = mediaPlayer.audioTrack,
+                subtitleTrackId     = mediaPlayer.spuTrack,
+                externalSubtitleUri = currentExternalSubtitleUri?.toString(),
+                subtitleDelayUs     = mediaPlayer.spuDelay,
+                audioDelayUs        = mediaPlayer.audioDelay,
+                playbackRate        = mediaPlayer.rate,
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun loadExternalSubtitle(subtitleUri: Uri) {
@@ -512,8 +754,11 @@ class PlayerController(
         try { mediaPlayer.rate = speed } catch (_: Exception) {}
     }
 
-    /** libVLC has no native single-track loop; loop is handled in the main listener's EndReached branch. */
-    @Volatile private var loopOne = false
+    /** libVLC has no native single-track loop; loop is handled in the main listener's EndReached branch.
+     *  Initial value comes from [SettingsStore.repeatOne] so a user who turned
+     *  on "Repeat one" in Settings doesn't have to flip the in-player toggle
+     *  on every video. */
+    @Volatile private var loopOne = settingsSnapshot.repeatOne
     fun setLooping(repeat: Boolean) {
         loopOne = repeat
         // Loop logic lives inside the single setEventListener registered in init().
@@ -566,11 +811,25 @@ class PlayerController(
         } catch (_: Exception) {}
     }
 
+    @OptIn(DelicateCoroutinesApi::class)
     fun release() {
         // Idempotent — safe to call from AndroidView.onRelease, the PlayerScreen
         // safety-net DisposableEffect, AND ViewModel.onCleared().
         // libVLC throws IllegalStateException on double release.
         if (isReleased) return
+        // Final state checkpoint BEFORE we tear down the native player —
+        // captures the latest track / delay choices in case the user exits
+        // between two poll-loop ticks. We can't suspend here so we fire the
+        // write off the GlobalScope; safe because PlaybackStateStore is a
+        // simple DataStore with no other dependency on the controller.
+        val finalKey = currentPositionKey
+        val finalState = if (finalKey != null) capturePlaybackState() else null
+        if (finalKey != null && finalState != null) {
+            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                runCatching { playbackStateStore.save(finalKey, finalState) }
+            }
+        }
+
         isReleased = true
         // Stop the polling loop FIRST so it can't see a half-released native instance.
         // The loop also re-checks `isReleased` after each suspend point, so even if it

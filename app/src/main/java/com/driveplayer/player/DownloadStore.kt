@@ -28,6 +28,10 @@ data class DownloadEntry(
     // Bytes received before failure/cancellation — persisted so the UI can show "X of Y downloaded".
     val bytesDownloaded: Long = 0L,
     val totalBytes: Long = 0L,
+    // Wall-clock millis when the entry transitioned into COMPLETED. Used by the
+    // auto-cleanup pass in DownloadService.onCreate. `null` for entries that
+    // predate this field — they're skipped by cleanup until they finish again.
+    val completedAt: Long? = null,
 )
 
 private val Context.downloadDataStore by preferencesDataStore(name = "downloads")

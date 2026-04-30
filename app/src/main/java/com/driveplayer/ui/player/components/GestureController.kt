@@ -30,6 +30,19 @@ fun GestureController(
     onShowIndicator: (ImageVector, String) -> Unit,
     onBrightnessChange: (Float) -> Unit,
     onZoomChange: (Float, Float, Float) -> Unit,
+    /**
+     * Per-gesture toggles + skip duration sourced from [com.driveplayer.data.SettingsStore].
+     * A disabled gesture is gated as early as possible — the corresponding
+     * `pointerInput` block returns immediately so the gesture is never
+     * detected, and pointer events fall through to the next layer (so a
+     * disabled pinch-zoom still lets a single-tap reach the tap detector).
+     */
+    skipDurationMs: Long = 10_000L,
+    brightnessGestureEnabled: Boolean = true,
+    volumeGestureEnabled: Boolean = true,
+    seekGestureEnabled: Boolean = true,
+    doubleTapSeekEnabled: Boolean = true,
+    pinchZoomEnabled: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -67,8 +80,8 @@ fun GestureController(
         modifier = modifier
             .fillMaxSize()
             // 1. Pinch-to-zoom
-            .pointerInput(isLocked) {
-                if (isLocked) return@pointerInput
+            .pointerInput(isLocked, pinchZoomEnabled) {
+                if (isLocked || !pinchZoomEnabled) return@pointerInput
                 detectTransformGestures { _, pan, zoom, _ ->
                     scale = (scale * zoom).coerceIn(1f, 5f)
                     if (scale > 1f) {
@@ -82,25 +95,33 @@ fun GestureController(
                 }
             }
             // 2. Tap / double-tap
-            .pointerInput(isLocked) {
+            .pointerInput(isLocked, doubleTapSeekEnabled, skipDurationMs) {
                 if (isLocked) return@pointerInput
                 detectTapGestures(
-                    onDoubleTap = { offset ->
-                        if (offset.x < size.width / 2) {
-                            onSeek((updatedPosition - 10_000L).coerceAtLeast(0L))
-                            onShowIndicator(Icons.Default.Replay10, "-10s")
-                        } else {
-                            val target = updatedPosition + 10_000L
-                            onSeek(if (duration > 0L) target.coerceAtMost(duration) else target)
-                            onShowIndicator(Icons.Default.Forward10, "+10s")
+                    onDoubleTap = if (doubleTapSeekEnabled) {
+                        { offset ->
+                            val skipMs = skipDurationMs
+                            val skipLabel = "${skipMs / 1000}s"
+                            if (offset.x < size.width / 2) {
+                                onSeek((updatedPosition - skipMs).coerceAtLeast(0L))
+                                onShowIndicator(Icons.Default.Replay10, "-$skipLabel")
+                            } else {
+                                val target = updatedPosition + skipMs
+                                onSeek(if (duration > 0L) target.coerceAtMost(duration) else target)
+                                onShowIndicator(Icons.Default.Forward10, "+$skipLabel")
+                            }
                         }
-                    },
+                    } else null,
                     onTap = { onToggleControls() }
                 )
             }
             // 3. Swipe — seek / volume / brightness (disabled while zoomed in to allow panning)
-            .pointerInput(isLocked, scale) {
+            .pointerInput(isLocked, scale, seekGestureEnabled, brightnessGestureEnabled, volumeGestureEnabled) {
                 if (isLocked || scale > 1f) return@pointerInput
+                // Skip the entire detector when none of the three swipe variants
+                // are enabled — saves the 30px-threshold accumulation work and
+                // avoids partially-enabled gesture states confusing the user.
+                if (!seekGestureEnabled && !brightnessGestureEnabled && !volumeGestureEnabled) return@pointerInput
                 detectDragGestures(
                     onDragStart = { offset ->
                         activeGesture = GestureType.NONE
@@ -133,15 +154,18 @@ fun GestureController(
                         val absX = abs(dragAccumulatorX)
                         val absY = abs(dragAccumulatorY)
                         val threshold = 30f
-                        
+
                         if (absX > threshold || absY > threshold) {
-                            if (absX > absY) { // simple majority
-                                activeGesture = GestureType.SEEK
-                            } else { // Vertical lock
-                                if (startX < width / 2f) {
-                                    activeGesture = GestureType.BRIGHTNESS
-                                } else {
-                                    activeGesture = GestureType.VOLUME
+                            if (absX > absY) {
+                                if (seekGestureEnabled) activeGesture = GestureType.SEEK
+                            } else {
+                                // Vertical lock — pick brightness/volume based on
+                                // start side, but skip a side that's been disabled.
+                                val onLeft = startX < width / 2f
+                                activeGesture = when {
+                                    onLeft && brightnessGestureEnabled -> GestureType.BRIGHTNESS
+                                    !onLeft && volumeGestureEnabled    -> GestureType.VOLUME
+                                    else -> GestureType.NONE
                                 }
                             }
                         }

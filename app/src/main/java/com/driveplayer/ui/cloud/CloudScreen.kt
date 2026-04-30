@@ -35,6 +35,7 @@ import com.driveplayer.ui.theme.*
 @Composable
 fun CloudScreen(
     onVideoClick: (DriveFile, List<DriveFile>, DriveRepository, String) -> Unit,
+    onOpenSettings: () -> Unit = {},
     cloudVm: CloudViewModel = viewModel()
 ) {
     val connectionState by cloudVm.state.collectAsStateWithLifecycle()
@@ -130,7 +131,8 @@ fun CloudScreen(
                 onSwitchAccount = { cloudVm.switchAccount(it) },
                 onAddAccount = { cloudVm.addNewAccount() },
                 onVideoClick = { file, siblings -> onVideoClick(file, siblings, cs.repo, cs.accessToken) },
-                onLogout = { cloudVm.showLogoutDialog() }
+                onLogout = { cloudVm.showLogoutDialog() },
+                onOpenSettings = onOpenSettings,
             )
         }
     }

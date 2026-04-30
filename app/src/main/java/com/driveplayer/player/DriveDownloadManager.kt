@@ -4,6 +4,8 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import com.driveplayer.data.model.DriveFile
+import com.driveplayer.di.AppModule
+import kotlinx.coroutines.runBlocking
 import java.io.File
 
 class DriveDownloadManager(private val context: Context) {
@@ -16,6 +18,14 @@ class DriveDownloadManager(private val context: Context) {
         val safeName = file.name.replace(Regex("[^A-Za-z0-9._\\-]"), "_")
         val destFile = File(destDir, "${file.id}_$safeName")
 
+        // Read the user's "Wi-Fi only" preference at enqueue time. Reading it
+        // here (vs. caching at construction) means flipping the switch in
+        // Settings affects subsequent queue additions immediately, without
+        // needing the app to restart or the manager to be rebuilt.
+        val wifiOnly = runCatching {
+            runBlocking { AppModule.settingsStore.snapshot().downloadsWifiOnly }
+        }.getOrDefault(false)
+
         val request = DownloadManager.Request(Uri.parse(url))
             .setTitle(file.name)
             .setDescription("Drive Player")
@@ -25,7 +35,8 @@ class DriveDownloadManager(private val context: Context) {
             // posts our own ongoing + completion notifications, so showing both
             // is redundant noise. Requires DOWNLOAD_WITHOUT_NOTIFICATION permission.
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN)
-            .setAllowedOverMetered(true)
+            .setAllowedOverMetered(!wifiOnly)
+            .setAllowedOverRoaming(!wifiOnly)
 
         return dm.enqueue(request)
     }

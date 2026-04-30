@@ -19,6 +19,17 @@ import org.videolan.libvlc.MediaPlayer
 class SyncController(
     private val playerController: PlayerController,
     private val scope: CoroutineScope,
+    /**
+     * User-defaults seed sourced from [com.driveplayer.data.SettingsStore]. The
+     * subtitle sliders in the in-player settings panel mutate these StateFlows,
+     * but they should *start* at the user-preferred default (not VLC's hardcoded
+     * 100 % / white / 50 %), otherwise the LaunchedEffect in PlayerScreen pushes
+     * the panel defaults back into PlayerController and overrides the values
+     * that were already seeded into [PlayerController.pendingSubtitle*].
+     */
+    defaultSubtitleScalePercent: Int = 100,
+    defaultSubtitleColorRgb: Int = 0xFFFFFF,
+    defaultSubtitleBgAlpha255: Int = 0,
 ) {
     // Track ops still go straight to the underlying MediaPlayer.
     private val mediaPlayer: MediaPlayer = playerController.mediaPlayer
@@ -49,11 +60,13 @@ class SyncController(
 
     // Kept on the API surface for the existing SubtitlePanel UI — not applied dynamically
     // under libVLC (would require per-Media options + restart).
-    private val _subtitleSize = MutableStateFlow(16f)
+    // Seeded from user settings: subtitleSize is in sp (16 sp == 100 %),
+    // subtitleTextColor is full ARGB, subtitleBgAlpha is 0..1.
+    private val _subtitleSize = MutableStateFlow(defaultSubtitleScalePercent / 100f * 16f)
     val subtitleSize: StateFlow<Float> = _subtitleSize
-    private val _subtitleTextColor = MutableStateFlow(0xFFFFFFFFL)
+    private val _subtitleTextColor = MutableStateFlow(0xFF000000L or defaultSubtitleColorRgb.toLong())
     val subtitleTextColor: StateFlow<Long> = _subtitleTextColor
-    private val _subtitleBgAlpha = MutableStateFlow(0.5f)
+    private val _subtitleBgAlpha = MutableStateFlow(defaultSubtitleBgAlpha255 / 255f)
     val subtitleBgAlpha: StateFlow<Float> = _subtitleBgAlpha
 
     // Maps the audio/subtitle track-list index (UI) back to libVLC's track ID (transport).

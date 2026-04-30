@@ -31,6 +31,7 @@ import com.driveplayer.ui.theme.*
 @Composable
 fun DownloadsScreen(
     onPlayDownload: (Uri, String) -> Unit,
+    onOpenSettings: () -> Unit = {},
     vm: DownloadsViewModel = viewModel(),
 ) {
     val downloads by vm.downloads.collectAsStateWithLifecycle()
@@ -44,7 +45,7 @@ fun DownloadsScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
+                .padding(start = 20.dp, end = 4.dp, top = 18.dp, bottom = 18.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(Icons.Default.Download, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(26.dp))
@@ -61,6 +62,7 @@ fun DownloadsScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = TextMuted
             )
+            com.driveplayer.ui.common.TopBarOverflow(onOpenSettings = onOpenSettings)
         }
 
         HorizontalDivider(color = TextMuted.copy(alpha = 0.15f))

@@ -82,6 +82,42 @@ class DownloadService : Service() {
         // notification immediately and let the loop replace it as soon as it has
         // real progress data.
         startForegroundCompat(buildPlaceholderNotification())
+
+        // Sweep stale completed downloads against the user's auto-delete window.
+        // Runs on every service start (not just app launch) so an entry that ages
+        // past its threshold while the service is alive still gets removed on the
+        // next user-initiated download.
+        scope.launch { runAutoCleanup() }
+    }
+
+    /**
+     * Delete every COMPLETED entry whose `completedAt` is older than the user's
+     * "Auto-delete after" preference. The on-disk file is removed first, then
+     * the entry from DataStore. Failures are swallowed (best-effort) — a stuck
+     * entry must never block the user starting fresh downloads.
+     */
+    private suspend fun runAutoCleanup() {
+        val days = AppModule.settingsStore.snapshot().autoDeleteDownloadsDays
+        if (days <= 0) return // 0 = "Never"
+        val now = System.currentTimeMillis()
+        val cutoff = now - days * 24L * 60L * 60L * 1000L
+        val expired = store.downloads.first().filter { entry ->
+            entry.status == DownloadStatus.COMPLETED &&
+                (entry.completedAt ?: 0L) > 0L &&
+                (entry.completedAt ?: 0L) < cutoff
+        }
+        for (entry in expired) {
+            runCatching {
+                entry.localPath?.let { path ->
+                    val uri = android.net.Uri.parse(path)
+                    when (uri.scheme) {
+                        "file"    -> uri.path?.let { java.io.File(it).delete() }
+                        "content" -> contentResolver.delete(uri, null, null)
+                    }
+                }
+            }
+            runCatching { store.remove(entry.fileId) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -156,7 +192,11 @@ class DownloadService : Service() {
             DownloadManager.STATUS_SUCCESSFUL -> {
                 val uri = dm.getLocalUri(entry.downloadManagerId)?.toString()
                 store.update(entry.fileId) {
-                    it.copy(status = DownloadStatus.COMPLETED, localPath = uri)
+                    it.copy(
+                        status = DownloadStatus.COMPLETED,
+                        localPath = uri,
+                        completedAt = System.currentTimeMillis(),
+                    )
                 }
                 live.update { it - entry.fileId }
                 DownloadNotifications.postCompleted(this, nm, entry.fileId, entry.title)
@@ -200,7 +240,11 @@ class DownloadService : Service() {
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         val uri = dm.getLocalUri(entry.downloadManagerId)?.toString()
                         store.update(entry.fileId) {
-                            it.copy(status = DownloadStatus.COMPLETED, localPath = uri)
+                            it.copy(
+                                status = DownloadStatus.COMPLETED,
+                                localPath = uri,
+                                completedAt = it.completedAt ?: System.currentTimeMillis(),
+                            )
                         }
                     }
                     DownloadManager.STATUS_FAILED -> {

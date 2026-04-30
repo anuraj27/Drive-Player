@@ -12,9 +12,14 @@ import com.driveplayer.ui.home.HomeScreen
 import com.driveplayer.ui.home.HomeTab
 import com.driveplayer.ui.local.LocalBrowserScreen
 import com.driveplayer.ui.player.PlayerScreen
+import com.driveplayer.ui.settings.SettingsScreen
+import com.driveplayer.ui.theme.DarkOnlyTheme
+import kotlinx.coroutines.runBlocking
 
 sealed class Screen {
     object Home : Screen()
+
+    object Settings : Screen()
 
     data class LocalPlayer(val video: LocalVideo) : Screen()
 
@@ -29,7 +34,15 @@ sealed class Screen {
 @Composable
 fun AppNavigation() {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
-    var activeTab      by remember { mutableStateOf(HomeTab.LOCAL) }
+
+    // Seed the active tab from the user's "default home tab" preference exactly
+    // once on cold start. After that the user controls the tab; the preference
+    // doesn't yank them back to a different tab if they changed it mid-session.
+    val seededTab = remember {
+        val name = runBlocking { AppModule.settingsStore.snapshot().defaultHomeTab }
+        runCatching { HomeTab.valueOf(name) }.getOrDefault(HomeTab.LOCAL)
+    }
+    var activeTab      by remember { mutableStateOf(seededTab) }
     var playerSession  by remember { mutableIntStateOf(0) }
 
     // Consume one-shot tab requests posted by deep links (e.g. tapping the
@@ -49,6 +62,8 @@ fun AppNavigation() {
         AppModule.requestedHomeTab.value = null
     }
 
+    val openSettings: () -> Unit = { currentScreen = Screen.Settings }
+
     when (val screen = currentScreen) {
         is Screen.Home -> {
             HomeScreen(
@@ -57,6 +72,7 @@ fun AppNavigation() {
                 localContent = {
                     LocalBrowserScreen(
                         localRepo = AppModule.localVideoRepository,
+                        onOpenSettings = openSettings,
                         onVideoClick = { video ->
                             activeTab = HomeTab.LOCAL
                             playerSession++
@@ -66,6 +82,7 @@ fun AppNavigation() {
                 },
                 cloudContent = {
                     CloudScreen(
+                        onOpenSettings = openSettings,
                         onVideoClick = { file, siblings, repo, accessToken ->
                             activeTab = HomeTab.CLOUD
                             playerSession++
@@ -80,6 +97,7 @@ fun AppNavigation() {
                 },
                 downloadsContent = {
                     DownloadsScreen(
+                        onOpenSettings = openSettings,
                         onPlayDownload = { uri, fileId ->
                             val syntheticVideo = LocalVideo(
                                 id = -1L,
@@ -104,23 +122,33 @@ fun AppNavigation() {
             )
         }
 
+        is Screen.Settings -> {
+            SettingsScreen(onBack = { currentScreen = Screen.Home })
+        }
+
         is Screen.LocalPlayer -> {
-            PlayerScreen(
-                localVideo = screen.video,
-                playerKey = "player_$playerSession",
-                onBack = { currentScreen = Screen.Home }
-            )
+            // Player UI is always rendered in dark — light chrome over a moving
+            // video viewport washes out the picture and looks broken.
+            DarkOnlyTheme {
+                PlayerScreen(
+                    localVideo = screen.video,
+                    playerKey = "player_$playerSession",
+                    onBack = { currentScreen = Screen.Home }
+                )
+            }
         }
 
         is Screen.CloudPlayer -> {
-            PlayerScreen(
-                videoFile = screen.videoFile,
-                siblingFiles = screen.siblingFiles,
-                repo = screen.repo,
-                accessToken = screen.accessToken,
-                playerKey = "player_$playerSession",
-                onBack = { currentScreen = Screen.Home }
-            )
+            DarkOnlyTheme {
+                PlayerScreen(
+                    videoFile = screen.videoFile,
+                    siblingFiles = screen.siblingFiles,
+                    repo = screen.repo,
+                    accessToken = screen.accessToken,
+                    playerKey = "player_$playerSession",
+                    onBack = { currentScreen = Screen.Home }
+                )
+            }
         }
     }
 }

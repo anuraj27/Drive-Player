@@ -36,6 +36,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.local.LocalVideoRepository
 import com.driveplayer.data.local.VideoFolder
+import com.driveplayer.ui.common.TopBarOverflow
 import com.driveplayer.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -43,6 +44,7 @@ import com.driveplayer.ui.theme.*
 fun LocalBrowserScreen(
     onVideoClick: (LocalVideo) -> Unit,
     localRepo: LocalVideoRepository,
+    onOpenSettings: () -> Unit = {},
     vm: LocalBrowserViewModel = viewModel(factory = LocalBrowserViewModel.Factory(localRepo))
 ) {
     val context = LocalContext.current
@@ -153,9 +155,10 @@ fun LocalBrowserScreen(
                         IconButton(onClick = { vm.activateSearch() }) {
                             Icon(Icons.Default.Search, contentDescription = "Search", tint = TextSecondary)
                         }
-                        IconButton(onClick = { vm.refresh() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = TextSecondary)
-                        }
+                        TopBarOverflow(
+                            onOpenSettings = onOpenSettings,
+                            onRefresh = { vm.refresh() },
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)

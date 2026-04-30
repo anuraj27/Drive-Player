@@ -12,15 +12,26 @@ A modern Android video player that streams videos directly from your Google Driv
 - **Local Library**: MediaStore-backed local video browser with folder grouping.
 - **Offline Downloads**: Queue downloads of any Drive video, with progress tracking, retry, and cancel — and resume from where you left off the next time you play them. Downloads keep running in the background (foreground service + live progress notification) even after you close the app, with a one-shot "Download complete" notification per file that deep-links straight into the Downloads tab.
 - **Continue Watching**: Resume any cloud video right where you left off; reopens refetch sibling files so external `.srt` auto-attach still works.
-- **VLC-like Gestures**:
+- **VLC-like Gestures** (each one individually toggleable in Settings):
   - Left vertical swipe: Brightness
   - Right vertical swipe: Volume
   - Horizontal swipe: Seek
   - Pinch: Zoom
-  - Double-tap left/right: ±10 s skip
+  - Double-tap left/right: skip back/forward (5/10/15/30 s, configurable)
 - **Player Toolkit**: Speed 0.25×–3×, A-B loop, sleep timer, aspect-ratio cycling, rotation lock.
 - **Visual Tuning**: Brightness, contrast, and saturation sliders all affect the picture (libVLC adjust filter); subtitle text size, colour, and background opacity are honoured at runtime.
 - **Subtitle Support**: External `.srt` loading + auto-attach for sibling subtitles in the same Drive folder.
+- **App-wide Settings (VLC-style)**: A dedicated Settings screen reachable from the 3-dot overflow on every tab. Sections grouped Playback / Audio / Subtitles / Appearance / Downloads / Cloud-style:
+  - **Library** — default tab on launch.
+  - **Appearance** — Theme (System / Dark / Light, instantly applied across the app; player route stays dark always), controls auto-hide time (3 / 5 / 10 s), show gesture hints toggle.
+  - **Playback** — resume from last position, default speed (0.5 ×–2 ×), skip duration (5 / 10 / 15 / 30 s), default orientation (Auto / Landscape / Portrait), repeat-one, keep-screen-on, network buffer.
+  - **Audio** — volume boost up to 200 %, libVLC equalizer enable + preset picker, background audio toggle.
+  - **Player gestures** — per-gesture toggles for brightness, volume, seek, double-tap, pinch zoom.
+  - **Subtitles** — enabled-by-default, auto-load same-folder `.srt`, default size / colour / background opacity.
+  - **Downloads** — Wi-Fi only, auto-delete completed downloads after Never / 1 / 7 / 30 days.
+  - **Advanced** — hardware acceleration (Auto / Disabled).
+  - **Privacy** — clear watch history, clear search history, sign out of all accounts, reset all settings.
+  - **About** — version, GitHub link.
 - **Modern UI**: Dark theme with electric blue/purple accents using Jetpack Compose.
 - **Secure Authentication**: Google Sign-In with OAuth 2.0 and a localhost proxy that injects the Bearer token for libVLC streaming.
 
@@ -98,9 +109,11 @@ app/src/main/java/com/driveplayer/
 │   ├── local/                       # AccountPreferences, LocalVideoRepository
 │   ├── model/DriveFile.kt           # Data models
 │   └── remote/                      # DriveApiService, DriveRepository
+├── data/
+│   └── SettingsStore.kt             # DataStore persistence for app-wide preferences (theme, default tab, gestures, playback, audio, subtitles, downloads, advanced)
 ├── player/
 │   ├── DriveAuthProxy.kt            # Localhost Bearer-injecting proxy for libVLC
-│   ├── DriveDownloadManager.kt      # Wraps Android DownloadManager
+│   ├── DriveDownloadManager.kt      # Wraps Android DownloadManager (respects Wi-Fi-only setting)
 │   ├── DownloadStore.kt             # DataStore persistence for downloads
 │   ├── DownloadService.kt           # Foreground service: queue advancement + reconcile + notifications
 │   ├── DownloadNotifications.kt     # Channels + builders for progress / completion / failure alerts
@@ -110,12 +123,14 @@ app/src/main/java/com/driveplayer/
 │   └── PlaybackPositionStore.kt     # SharedPreferences resume positions
 └── ui/
     ├── theme/                       # Color, Theme, Type
+    ├── common/TopBarOverflow.kt     # Shared 3-dot overflow menu used in every tab's top bar
     ├── login/LoginViewModel.kt      # Owned by CloudScreen
     ├── home/HomeScreen.kt           # Bottom nav: Local / Cloud / Downloads
     ├── local/                       # Local browser + ViewModel
     ├── cloud/                       # Cloud connection state machine
     ├── browser/                     # File browser + ViewModel (search, pins, history, downloads)
     ├── downloads/                   # Downloads tab + ViewModel
+    ├── settings/                    # SettingsScreen + SettingsViewModel
     └── player/
         ├── PlayerScreen.kt          # Compose surface with VLCVideoLayout
         ├── PlayerViewModel.kt       # Owns the controllers

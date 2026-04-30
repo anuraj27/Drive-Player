@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -36,9 +37,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.driveplayer.data.SettingsStore
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
+import com.driveplayer.di.AppModule
 import com.driveplayer.ui.player.components.GestureController
 import com.driveplayer.ui.player.components.OverlayController
 import com.driveplayer.ui.player.components.SettingsController
@@ -143,8 +146,17 @@ fun PlayerScreen(
     var activeSettingsTab by remember { mutableStateOf<SettingsTab?>(null) }
     // 0 = FIT, 3 = FILL, 4 = ZOOM (kept as int constants to preserve the SettingsController API).
     var resizeMode      by remember { mutableIntStateOf(0) }
-    var isLooping       by remember { mutableStateOf(false) }
-    var isRotationLocked by remember { mutableStateOf(false) }
+    // Seeded from the settings snapshot captured at PlayerController construction.
+    // Reading `userSettings` directly would re-trigger this on every snapshot change.
+    var isLooping       by remember { mutableStateOf(vm.playerController.settingsSnapshot.repeatOne) }
+    // Seed the rotation-lock icon state from the default-orientation preference:
+    // if the user has chosen LANDSCAPE / PORTRAIT, the orientation IS locked
+    // (we set SENSOR_LANDSCAPE / PORTRAIT below), and the icon should show that.
+    // Only AUTO leaves the OS in charge, so the lock starts off.
+    var isRotationLocked by remember {
+        val pref = vm.playerController.settingsSnapshot.defaultOrientation
+        mutableStateOf(pref == "LANDSCAPE" || pref == "PORTRAIT")
+    }
 
     // Track if video was playing before screen-off / activity pause so we can resume.
     var wasPlayingBeforePause by remember { mutableStateOf(false) }
@@ -152,6 +164,16 @@ fun PlayerScreen(
     // Sleep timer state
     var sleepTimerRemainingSeconds by remember { mutableIntStateOf(0) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
+
+    // Live user settings — observed for the lifetime of the player so gesture
+    // toggles ("Pinch to zoom" off, etc.) take effect immediately when the user
+    // flips them in Settings. Things baked in at prepare time (default speed,
+    // network cache, default subtitle styling) don't retroactively change for
+    // the current video — they're captured by [PlayerController.settingsSnapshot]
+    // and would need a media restart to apply.
+    val userSettings by AppModule.settingsStore.snapshotFlow.collectAsStateWithLifecycle(
+        initialValue = com.driveplayer.ui.settings.SettingsViewModel.FALLBACK_SNAPSHOT
+    )
 
     LaunchedEffect(sleepTimerRemainingSeconds) {
         if (sleepTimerRemainingSeconds > 0) {
@@ -197,9 +219,9 @@ fun PlayerScreen(
     }
 
     // Auto-hide controls only while playing (keeps them visible when paused).
-    LaunchedEffect(controlsVisible, isPlaying, isLocked, activeSettingsTab) {
+    LaunchedEffect(controlsVisible, isPlaying, isLocked, activeSettingsTab, userSettings.controlsAutoHideMs) {
         if (controlsVisible && isPlaying && !isLocked && activeSettingsTab == null) {
-            delay(3_000)
+            delay(userSettings.controlsAutoHideMs)
             controlsVisible = false
         }
     }
@@ -217,20 +239,25 @@ fun PlayerScreen(
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
+    // Captured by reference inside the observer so flipping "Background audio"
+    // mid-session takes effect on the next pause without re-creating the observer.
+    val backgroundAudioRef = androidx.compose.runtime.rememberUpdatedState(userSettings.backgroundAudio)
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
                     // Pause whenever the activity is backgrounded (screen off, recents,
-                    // home button) so we never leak audio behind the lock screen.
-                    if (vm.playerController.isPlaying.value) {
+                    // home button) — UNLESS the user explicitly enabled background audio.
+                    // In that case we keep playing; the visual surface is detached by
+                    // the OS but the audio decoder keeps producing samples.
+                    if (vm.playerController.isPlaying.value && !backgroundAudioRef.value) {
                         wasPlayingBeforePause = true
                         vm.playerController.pause()
                     }
                 }
                 Lifecycle.Event.ON_STOP -> {
                     // Double-safety in case ON_PAUSE didn't catch the transition.
-                    if (vm.playerController.isPlaying.value) {
+                    if (vm.playerController.isPlaying.value && !backgroundAudioRef.value) {
                         wasPlayingBeforePause = true
                         vm.playerController.pause()
                     }
@@ -288,7 +315,19 @@ fun PlayerScreen(
     }
 
     DisposableEffect(Unit) {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        // Seed orientation from the user's preference. The in-player rotation
+        // toggle still overrides this (and sets `isRotationLocked=true`); we
+        // only consult the preference for the *initial* state. Changing the
+        // preference while a video is playing doesn't yank the orientation
+        // — that would be jarring mid-playback.
+        //
+        // Read from PlayerController.settingsSnapshot (the synchronous one-shot
+        // captured at construction) rather than `userSettings` — the live flow
+        // hasn't emitted yet on first composition, so it would always be the
+        // FALLBACK_SNAPSHOT's "AUTO" value regardless of what the user picked.
+        activity?.requestedOrientation = orientationFromPreference(
+            vm.playerController.settingsSnapshot.defaultOrientation
+        )
         onDispose {
             val window = activity?.window
             val insetsController = window?.let { WindowInsetsControllerCompat(it, it.decorView) }
@@ -339,7 +378,13 @@ fun PlayerScreen(
             onToggleControls = { controlsVisible = !controlsVisible },
             onShowIndicator  = showIndicator,
             onBrightnessChange = { vm.displayController.setBrightness(it) },
-            onZoomChange     = { s, px, py -> scaleState = s; panXState = px; panYState = py }
+            onZoomChange     = { s, px, py -> scaleState = s; panXState = px; panYState = py },
+            skipDurationMs   = userSettings.skipDurationMs,
+            brightnessGestureEnabled = userSettings.brightnessGesture,
+            volumeGestureEnabled     = userSettings.volumeGesture,
+            seekGestureEnabled       = userSettings.seekGesture,
+            doubleTapSeekEnabled     = userSettings.doubleTapSeek,
+            pinchZoomEnabled         = userSettings.pinchZoom,
         ) {
             Box(
                 modifier = Modifier
@@ -354,7 +399,10 @@ fun PlayerScreen(
                 AndroidView(
                     factory = { ctx ->
                         org.videolan.libvlc.util.VLCVideoLayout(ctx).apply {
-                            keepScreenOn = true
+                            // Keep-screen-on tracks the user setting. Updated
+                            // again from the `update` block so flipping the
+                            // toggle takes effect without recreating the view.
+                            keepScreenOn = userSettings.keepScreenOn
                             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
                             // attachViews(layout, displayManager, subtitles, useTextureView).
                             // subtitles=false — VLC's internal subtitle SurfaceView doesn't
@@ -371,7 +419,7 @@ fun PlayerScreen(
                             vm.startPlaybackOnce()
                         }
                     },
-                    update = { /* surface handled by libVLC; no per-frame work */ },
+                    update = { it.keepScreenOn = userSettings.keepScreenOn },
                     // Release while the view is still attached to its parent — i.e. the
                     // TextureView Surface is alive for stop() and detachViews(). If we
                     // release later (in DisposableEffect.onDispose) the parent has already
@@ -380,6 +428,10 @@ fun PlayerScreen(
                     onRelease = { vm.playerController.release() },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                // First-play gesture hints — only shown if the user hasn't disabled
+                // them in Settings. Auto-fades after 4 seconds of playback.
+                GestureHintsOverlay(visibleInitially = userSettings.showGestureHints)
             }
         }
 
@@ -493,8 +545,8 @@ fun PlayerScreen(
                 playbackSpeed   = speed,
                 isRotationLocked = isRotationLocked,
                 onPlayPause     = { if (isPlaying) vm.playerController.pause() else vm.playerController.play() },
-                onSeekBack      = { vm.playerController.seekBy(-10_000L) },
-                onSeekForward   = { vm.playerController.seekBy(10_000L) },
+                onSeekBack      = { vm.playerController.seekBy(-userSettings.skipDurationMs) },
+                onSeekForward   = { vm.playerController.seekBy(userSettings.skipDurationMs) },
                 onSeek          = { vm.playerController.seekTo(it) },
                 onSettingsClick = { activeSettingsTab = SettingsTab.MAIN_MENU },
                 onRotationLockToggle = {
@@ -651,5 +703,89 @@ fun PlayerScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Map the user's "Default orientation" preference onto the matching
+ * [ActivityInfo] constant. AUTO uses `FULL_SENSOR` so the OS auto-rotates
+ * including reverse-landscape — what almost every phone user expects when
+ * they tilt the device.
+ */
+private fun orientationFromPreference(value: String): Int = when (value) {
+    "LANDSCAPE" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    "PORTRAIT"  -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    else        -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+}
+
+/**
+ * Lightweight one-shot hint overlay that surfaces the player's gesture map
+ * when a video starts. Fades out after 4 seconds and never reappears for the
+ * remainder of the player session. Honours the user's "Show gesture hints"
+ * toggle — when off the composable returns nothing on the first call.
+ */
+@Composable
+private fun GestureHintsOverlay(visibleInitially: Boolean) {
+    if (!visibleInitially) return
+    var visible by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        delay(4_000)
+        visible = false
+    }
+    androidx.compose.animation.AnimatedVisibility(
+        visible = visible,
+        enter   = androidx.compose.animation.fadeIn(),
+        exit    = androidx.compose.animation.fadeOut(),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 32.dp),
+        ) {
+            // Brightness side
+            Column(
+                modifier = Modifier.align(Alignment.CenterStart),
+                horizontalAlignment = Alignment.Start,
+            ) {
+                HintChip(text = "↕  Brightness")
+                Spacer(modifier = Modifier.padding(top = 8.dp))
+                HintChip(text = "← Double-tap to rewind")
+            }
+            // Volume side
+            Column(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                horizontalAlignment = Alignment.End,
+            ) {
+                HintChip(text = "↕  Volume")
+                Spacer(modifier = Modifier.padding(top = 8.dp))
+                HintChip(text = "Double-tap to forward →")
+            }
+            // Bottom hint
+            HintChip(
+                text = "← →  Slide to seek",
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HintChip(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .background(
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text  = text,
+            color = Color.White,
+            fontSize = 13.sp,
+        )
     }
 }

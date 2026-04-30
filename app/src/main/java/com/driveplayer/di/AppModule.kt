@@ -1,6 +1,7 @@
 package com.driveplayer.di
 
 import android.content.Context
+import com.driveplayer.data.SettingsStore
 import com.driveplayer.data.auth.GoogleSignInHelper
 import com.driveplayer.data.local.LocalVideoRepository
 import com.driveplayer.player.DownloadStore
@@ -62,6 +63,14 @@ object AppModule {
 
     val recentSearchStore: RecentSearchStore by lazy {
         RecentSearchStore(appContext)
+    }
+
+    val settingsStore: SettingsStore by lazy {
+        SettingsStore(appContext)
+    }
+
+    val playbackStateStore: com.driveplayer.player.PlaybackStateStore by lazy {
+        com.driveplayer.player.PlaybackStateStore(appContext)
     }
 
     val driveDownloadManager: DriveDownloadManager by lazy {

@@ -39,6 +39,7 @@ import com.driveplayer.data.remote.DriveRepository
 import com.driveplayer.player.PinnedFolder
 import com.driveplayer.player.WatchEntry
 import com.driveplayer.ui.cloud.SavedAccount
+import com.driveplayer.ui.common.TopBarOverflow
 import com.driveplayer.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -54,6 +55,7 @@ fun FileBrowserScreen(
     onAddAccount: () -> Unit,
     onVideoClick: (file: DriveFile, siblings: List<DriveFile>) -> Unit,
     onLogout: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     vm: FileBrowserViewModel = viewModel(key = accountEmail, factory = FileBrowserViewModel.Factory(repo, accessToken))
 ) {
     val state           by vm.state.collectAsStateWithLifecycle()
@@ -103,46 +105,26 @@ fun FileBrowserScreen(
         }
     }
 
+    val isAtRoot = folderStack.size <= 1
+
     Scaffold(
         topBar = {
-            Column {
-                // ── Tab row + profile icon ─────────────────────────────────
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(DarkBackground),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (!isSearchActive) {
-                        TabRow(
-                            modifier = Modifier.weight(1f),
-                            selectedTabIndex = if (tabMode == TabMode.MY_DRIVE) 0 else 1,
-                            containerColor = DarkBackground,
-                            contentColor = AccentPrimary
-                        ) {
-                            Tab(
-                                selected = tabMode == TabMode.MY_DRIVE,
-                                onClick = { vm.switchTab(TabMode.MY_DRIVE) },
-                                text = {
-                                    Text(
-                                        "My Drive",
-                                        fontWeight = if (tabMode == TabMode.MY_DRIVE) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                }
-                            )
-                            Tab(
-                                selected = tabMode == TabMode.SHARED,
-                                onClick = { vm.switchTab(TabMode.SHARED) },
-                                text = {
-                                    Text(
-                                        "Shared",
-                                        fontWeight = if (tabMode == TabMode.SHARED) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                }
-                            )
-                        }
-                    } else {
-                        Spacer(Modifier.width(8.dp))
+            // Single consolidated top bar:
+            //  • Search active        → back-arrow + search field + clear
+            //  • At root (My Drive / Shared) → tab row + actions
+            //  • In a subfolder       → back-arrow + folder title (with breadcrumb) + actions
+            //
+            // Action icons (search, refresh, profile, settings ⋮) live in ONE
+            // place so they're never duplicated regardless of which mode we're in.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkBackground)
+                    .padding(end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                when {
+                    isSearchActive -> {
                         IconButton(onClick = { vm.deactivateSearch() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cancel search", tint = TextPrimary)
                         }
@@ -172,87 +154,107 @@ fun FileBrowserScreen(
                                 }
                             }
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(4.dp))
                     }
-
-                    if (!isSearchActive) {
-                        // Search icon
-                        IconButton(onClick = { vm.activateSearch() }) {
-                            Icon(Icons.Default.Search, contentDescription = "Search", tint = TextSecondary)
-                        }
-                        // Profile icon
-                        Box(modifier = Modifier.padding(end = 4.dp)) {
-                            IconButton(onClick = { showAccountMenu = true }) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(AccentPrimary),
-                                    contentAlignment = Alignment.Center
-                                ) {
+                    isAtRoot -> {
+                        // Compact tab row — "My Drive" / "Shared" as the root heading.
+                        TabRow(
+                            modifier = Modifier.weight(1f),
+                            selectedTabIndex = if (tabMode == TabMode.MY_DRIVE) 0 else 1,
+                            containerColor = DarkBackground,
+                            contentColor = AccentPrimary,
+                        ) {
+                            Tab(
+                                selected = tabMode == TabMode.MY_DRIVE,
+                                onClick = { vm.switchTab(TabMode.MY_DRIVE) },
+                                text = {
                                     Text(
-                                        (displayName?.firstOrNull() ?: accountEmail.firstOrNull())
-                                            ?.uppercaseChar()?.toString() ?: "?",
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold
+                                        "My Drive",
+                                        fontWeight = if (tabMode == TabMode.MY_DRIVE) FontWeight.Bold else FontWeight.Normal
                                     )
                                 }
-                            }
-                            AccountDropdownMenu(
-                                expanded = showAccountMenu,
-                                onDismiss = { showAccountMenu = false },
-                                currentEmail = accountEmail,
-                                currentDisplayName = displayName,
-                                savedAccounts = savedAccounts,
-                                onSwitchAccount = { showAccountMenu = false; onSwitchAccount(it) },
-                                onAddAccount = { showAccountMenu = false; onAddAccount() },
-                                onLogout = { showAccountMenu = false; onLogout() }
+                            )
+                            Tab(
+                                selected = tabMode == TabMode.SHARED,
+                                onClick = { vm.switchTab(TabMode.SHARED) },
+                                text = {
+                                    Text(
+                                        "Shared",
+                                        fontWeight = if (tabMode == TabMode.SHARED) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    else -> {
+                        // In a subfolder — back-arrow plus the folder title and breadcrumb.
+                        IconButton(onClick = { vm.goBack() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = TextPrimary,
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {
+                            Text(
+                                vm.currentFolder.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                folderStack.dropLast(1).joinToString(" › ") { it.name },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
                 }
 
-                // ── Folder breadcrumb (only when not in search mode) ───────
+                // Action icons — same set in every non-search mode so root and
+                // subfolders feel consistent. Hidden during search to give the
+                // text field room. Refresh now lives inside the overflow menu
+                // so the row stays compact at smaller widths.
                 if (!isSearchActive) {
-                    TopAppBar(
-                        title = {
-                            Column {
+                    IconButton(onClick = { vm.activateSearch() }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search", tint = TextSecondary)
+                    }
+                    Box {
+                        IconButton(onClick = { showAccountMenu = true }) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(AccentPrimary),
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 Text(
-                                    vm.currentFolder.name,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    (displayName?.firstOrNull() ?: accountEmail.firstOrNull())
+                                        ?.uppercaseChar()?.toString() ?: "?",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
                                 )
-                                if (folderStack.size > 1) {
-                                    Text(
-                                        folderStack.dropLast(1).joinToString(" › ") { it.name },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = TextMuted,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
                             }
-                        },
-                        navigationIcon = {
-                            if (folderStack.size > 1) {
-                                IconButton(onClick = { vm.goBack() }) {
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = "Back",
-                                        tint = TextPrimary
-                                    )
-                                }
-                            }
-                        },
-                        actions = {
-                            IconButton(onClick = { vm.refresh() }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = TextSecondary)
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+                        }
+                        AccountDropdownMenu(
+                            expanded = showAccountMenu,
+                            onDismiss = { showAccountMenu = false },
+                            currentEmail = accountEmail,
+                            currentDisplayName = displayName,
+                            savedAccounts = savedAccounts,
+                            onSwitchAccount = { showAccountMenu = false; onSwitchAccount(it) },
+                            onAddAccount = { showAccountMenu = false; onAddAccount() },
+                            onLogout = { showAccountMenu = false; onLogout() },
+                        )
+                    }
+                    TopBarOverflow(
+                        onOpenSettings = onOpenSettings,
+                        onRefresh = { vm.refresh() },
                     )
                 }
             }

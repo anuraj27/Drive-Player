@@ -59,4 +59,9 @@ class WatchHistoryStore(private val context: Context) {
             prefs[WATCH_KEY] = Json.encodeToString(current.filterNot { it.fileId == fileId })
         }
     }
+
+    /** Wipes the entire Continue Watching list. Wired to the Privacy section of Settings. */
+    suspend fun clearAll() {
+        context.watchDataStore.edit { it.remove(WATCH_KEY) }
+    }
 }

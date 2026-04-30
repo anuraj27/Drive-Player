@@ -26,8 +26,27 @@ class PlayerViewModel(
         scope = viewModelScope,
         watchHistoryStore = AppModule.watchHistoryStore,
     )
-    val syncController = SyncController(playerController, viewModelScope)
+    val syncController = SyncController(
+        playerController = playerController,
+        scope = viewModelScope,
+        defaultSubtitleScalePercent = playerController.settingsSnapshot.defaultSubtitleScale,
+        defaultSubtitleColorRgb = playerController.settingsSnapshot.defaultSubtitleColor,
+        defaultSubtitleBgAlpha255 = playerController.settingsSnapshot.defaultSubtitleBgAlpha,
+    )
     val displayController = DisplayController()
+
+    init {
+        // Receive per-file restore events from PlayerController and forward the
+        // delay values into SyncController so the in-player Audio/Subtitle
+        // panel sliders show the restored offsets. Track-id and rate restore
+        // happen inside PlayerController (it owns the MediaPlayer) — they don't
+        // need to round-trip through here. Conversion: state stores micro-
+        // seconds; SyncController exposes seconds.
+        playerController.onStateRestored = { state ->
+            syncController.setAudioDelay(state.audioDelayUs / 1_000_000f)
+            syncController.setSubtitleDelay(state.subtitleDelayUs / 1_000_000f)
+        }
+    }
 
     // Hold inputs so PlayerScreen can trigger playback AFTER attachViews has run.
     // Calling play() before the surface is attached causes libVLC's vout to fail
@@ -43,11 +62,18 @@ class PlayerViewModel(
         if (pendingLocalVideo != null) {
             playerController.prepareAndPlayLocal(pendingLocalVideo)
         } else if (pendingVideoFile != null) {
-            val srtFile = pendingSiblingFiles.firstOrNull {
-                it.isSrt && it.name.removeSuffix(".srt").equals(
-                    pendingVideoFile.name.substringBeforeLast('.'), ignoreCase = true
-                )
-            } ?: pendingSiblingFiles.firstOrNull { it.isSrt }
+            // Auto-attach an external `.srt` from the same Drive folder unless
+            // the user disabled it in Settings → Subtitles. Their saved
+            // selection in the Subtitle panel still wins, but the *initial*
+            // load skips the .srt slave entirely so a heavy/wrong sub never
+            // even reaches libVLC.
+            val srtFile = if (playerController.settingsSnapshot.autoLoadSubtitles) {
+                pendingSiblingFiles.firstOrNull {
+                    it.isSrt && it.name.removeSuffix(".srt").equals(
+                        pendingVideoFile.name.substringBeforeLast('.'), ignoreCase = true
+                    )
+                } ?: pendingSiblingFiles.firstOrNull { it.isSrt }
+            } else null
             playerController.prepareAndPlay(pendingVideoFile, srtFile)
         }
     }
