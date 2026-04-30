@@ -19,6 +19,13 @@ data class WatchEntry(
     val positionMs: Long,
     val durationMs: Long,
     val lastWatchedAt: Long,
+    /**
+     * The Drive folder this video was watched from, when known. Saved on the player side
+     * so reopening from the Continue-Watching carousel can re-fetch siblings (and pick up
+     * an external `.srt` automatically). Old entries without a parent simply fall back to
+     * the no-siblings path. Defaulted for backwards compatibility with stored JSON.
+     */
+    val parentFolderId: String? = null,
 )
 
 private val Context.watchDataStore by preferencesDataStore(name = "watch_history")

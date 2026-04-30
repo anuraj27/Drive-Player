@@ -25,6 +25,7 @@ fun OverlayController(
     fileName: String,
     isPlaying: Boolean,
     isBuffering: Boolean,
+    bufferingPercent: Float,
     currentPosition: Long,
     bufferedPosition: Long,
     duration: Long,
@@ -44,7 +45,6 @@ fun OverlayController(
     onBack: () -> Unit,
     onAspectRatioClick: () -> Unit,
     onAspectRatioLongClick: () -> Unit,
-    onPipClick: () -> Unit,
     sleepTimerRemaining: Int = 0,
     onSleepTimerClick: () -> Unit = {},
 ) {
@@ -115,9 +115,6 @@ fun OverlayController(
                     )
                 }
             }
-            IconButton(onClick = onPipClick) {
-                Icon(Icons.Default.PictureInPictureAlt, contentDescription = "PiP", tint = Color.White, modifier = Modifier.size(26.dp))
-            }
             IconButton(onClick = onSubtitleClick) {
                 Icon(Icons.Default.Subtitles, contentDescription = "Subtitles", tint = Color.White, modifier = Modifier.size(26.dp))
             }
@@ -161,14 +158,12 @@ fun OverlayController(
             if (isBuffering) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(72.dp))
-                    if (duration > 0L) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = "${(bufferedPosition * 100 / duration).toInt()}%",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "${bufferingPercent.toInt()}%",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium
+                    )
                 }
             } else {
                 IconButton(

@@ -36,8 +36,10 @@ fun SettingsController(
     onBrightnessChange: (Float) -> Unit,
     contrast: Float,
     onContrastChange: (Float) -> Unit,
+    onContrastCommit: () -> Unit = {},
     saturation: Float,
     onSaturationChange: (Float) -> Unit,
+    onSaturationCommit: () -> Unit = {},
     isLooping: Boolean,
     onLoopingToggle: (Boolean) -> Unit,
     abLoopStart: Long,
@@ -212,6 +214,7 @@ fun SettingsController(
             Slider(
                 value = contrast,
                 onValueChange = onContrastChange,
+                onValueChangeFinished = onContrastCommit,
                 valueRange = 0f..2f,
                 colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
             )
@@ -220,6 +223,7 @@ fun SettingsController(
             Slider(
                 value = saturation,
                 onValueChange = onSaturationChange,
+                onValueChangeFinished = onSaturationCommit,
                 valueRange = 0f..2f,
                 colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
             )

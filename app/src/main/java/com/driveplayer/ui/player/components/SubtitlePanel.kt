@@ -46,10 +46,13 @@ fun SubtitlePanel(
     onSubtitlePositionChange: (String) -> Unit,
     subtitleSize: Float,
     onSubtitleSizeChange: (Float) -> Unit,
+    onSubtitleSizeCommit: () -> Unit = {},
     subtitleTextColor: Long,
     onSubtitleTextColorChange: (Long) -> Unit,
+    onSubtitleTextColorCommit: () -> Unit = {},
     subtitleBgAlpha: Float,
     onSubtitleBgAlphaChange: (Float) -> Unit,
+    onSubtitleBgAlphaCommit: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -156,6 +159,7 @@ fun SubtitlePanel(
             Slider(
                 value = subtitleSize,
                 onValueChange = onSubtitleSizeChange,
+                onValueChangeFinished = onSubtitleSizeCommit,
                 valueRange = 10f..32f,
                 colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
             )
@@ -184,7 +188,10 @@ fun SubtitlePanel(
                                 color = if (isSelected) AccentPrimary else Color.Transparent,
                                 shape = CircleShape
                             )
-                            .clickable { onSubtitleTextColorChange(colorLong) },
+                            .clickable {
+                                onSubtitleTextColorChange(colorLong)
+                                onSubtitleTextColorCommit()
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         if (isSelected) {
@@ -218,6 +225,7 @@ fun SubtitlePanel(
             Slider(
                 value = subtitleBgAlpha,
                 onValueChange = onSubtitleBgAlphaChange,
+                onValueChangeFinished = onSubtitleBgAlphaCommit,
                 valueRange = 0f..1f,
                 colors = SliderDefaults.colors(activeTrackColor = AccentPrimary, thumbColor = AccentPrimary)
             )

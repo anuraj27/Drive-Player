@@ -105,6 +105,11 @@ class GoogleSignInHelper(
             )
         }
 
+    /** Marks [token] invalid in the GoogleAuthUtil cache so a subsequent getToken() returns a fresh one. */
+    suspend fun invalidateToken(token: String) = withContext(Dispatchers.IO) {
+        GoogleAuthUtil.invalidateToken(context, token)
+    }
+
     /**
      * Signs out only the main (default) client so the account picker shows without pre-selection.
      * Call this before launching the sign-in intent when adding a new account.

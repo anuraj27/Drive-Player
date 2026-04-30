@@ -38,6 +38,7 @@ import com.driveplayer.player.PinnedFolder
 import com.driveplayer.player.WatchEntry
 import com.driveplayer.ui.cloud.SavedAccount
 import com.driveplayer.ui.theme.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,16 +67,28 @@ fun FileBrowserScreen(
 
     var showAccountMenu by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
+    val coroutineScope = rememberCoroutineScope()
 
-    // Navigate to a recently-watched file — we need sibling files from the current list
-    // so we just pass an empty siblings list; PlayerController will still play the file.
+    // Navigate to a recently-watched file. If the entry remembers its parent folder
+    // (saved by the player when it last checkpointed history), we refetch siblings so
+    // an external `.srt` in the same folder can still auto-attach. We don't block the
+    // navigation on that fetch — we open the player immediately if no parent is known.
     fun openWatchEntry(entry: WatchEntry) {
         val synthetic = DriveFile(
             id = entry.fileId,
             name = entry.title,
             mimeType = entry.mimeType,
+            thumbnailLink = entry.thumbnailLink,
         )
-        onVideoClick(synthetic, emptyList())
+        val parent = entry.parentFolderId
+        if (parent != null) {
+            coroutineScope.launch {
+                val siblings = repo.listFolder(parent).getOrElse { emptyList() }
+                onVideoClick(synthetic, siblings)
+            }
+        } else {
+            onVideoClick(synthetic, emptyList())
+        }
     }
 
     val canGoBack = isSearchActive || folderStack.size > 1

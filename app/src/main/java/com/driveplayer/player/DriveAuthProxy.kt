@@ -13,10 +13,17 @@ import java.net.URL
  * has stopped accepting `?access_token=` query params for media downloads (returns 403).
  * The proxy runs on 127.0.0.1:randomPort, accepts libVLC's GET (forwarding any Range
  * header), and pipes the Drive response back. One proxy per cloud playback session.
+ *
+ * @param tokenProvider returns the latest access token on every call. Re-evaluated per
+ *                     request and again on retry, so a refresh elsewhere automatically
+ *                     propagates here.
+ * @param onRefreshNeeded invoked when Drive returns 401. Should perform a synchronous
+ *                       token refresh; if it returns true the request is retried once.
  */
 class DriveAuthProxy(
     private val targetUrl: String,
-    private val accessToken: String,
+    private val tokenProvider: () -> String,
+    private val onRefreshNeeded: () -> Boolean = { false },
 ) {
     private val server: ServerSocket = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
     val port: Int = server.localPort
@@ -65,16 +72,14 @@ class DriveAuthProxy(
             val rangeHeader = Regex("(?im)^Range:\\s*(.+)$")
                 .find(reqHeaders)?.groupValues?.get(1)?.trim()
 
-            val conn = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                instanceFollowRedirects = true
-                setRequestProperty("Authorization", "Bearer $accessToken")
-                if (rangeHeader != null) setRequestProperty("Range", rangeHeader)
-                connectTimeout = 15_000
-                readTimeout = 30_000
+            // Try the request; on 401 trigger a refresh and retry once.
+            var conn = openUpstream(rangeHeader)
+            var status = try { conn.responseCode } catch (_: Exception) { 502 }
+            if (status == 401 && onRefreshNeeded()) {
+                try { conn.disconnect() } catch (_: Exception) {}
+                conn = openUpstream(rangeHeader)
+                status = try { conn.responseCode } catch (_: Exception) { 502 }
             }
-
-            val status = try { conn.responseCode } catch (e: Exception) { 502 }
             val message = conn.responseMessage ?: "OK"
 
             val statusLine = "HTTP/1.1 $status $message\r\n"
@@ -98,4 +103,14 @@ class DriveAuthProxy(
             try { client.close() } catch (_: Exception) {}
         }
     }
+
+    private fun openUpstream(rangeHeader: String?): HttpURLConnection =
+        (URL(targetUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            instanceFollowRedirects = true
+            setRequestProperty("Authorization", "Bearer ${tokenProvider()}")
+            if (rangeHeader != null) setRequestProperty("Range", rangeHeader)
+            connectTimeout = 15_000
+            readTimeout = 30_000
+        }
 }

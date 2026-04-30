@@ -10,6 +10,7 @@ data class DriveFile(
     @SerializedName("modifiedTime") val modifiedTime: String? = null,
     @SerializedName("thumbnailLink")val thumbnailLink: String? = null,
     @SerializedName("owners")       val owners: List<Owner>? = null,
+    @SerializedName("parents")      val parents: List<String>? = null,
 ) {
     val isFolder: Boolean get() = mimeType == "application/vnd.google-apps.folder"
     val isVideo: Boolean  get() = mimeType.startsWith("video/")

@@ -95,8 +95,12 @@ class CloudViewModel : ViewModel() {
     }
 
     private fun connectWith(token: String, email: String, displayName: String?) {
-        val repo = AppModule.buildDriveRepository(token)
-        val client = AppModule.buildOkHttpClient(token)
+        // Single source of truth for the Bearer token — OkHttp interceptor, OkHttp
+        // 401 Authenticator, and DriveAuthProxy all read from AppModule, so a future
+        // refresh propagates to every caller automatically.
+        AppModule.setActiveCredentials(email, token)
+        val repo = AppModule.buildDriveRepository()
+        val client = AppModule.buildOkHttpClient()
 
         val newAccount = SavedAccount(email, displayName, email)
         viewModelScope.launch {
@@ -121,6 +125,7 @@ class CloudViewModel : ViewModel() {
                 accountPrefs.removeAccount(currentEmail)
             }
             accountPrefs.setActiveAccount(null)
+            AppModule.clearActiveCredentials()
             _state.value = CloudConnectionState.Disconnected
             _showLogoutDialog.value = false
         }
@@ -134,6 +139,7 @@ class CloudViewModel : ViewModel() {
             } catch (e: Exception) {
                 // ignore
             }
+            AppModule.clearActiveCredentials()
             _state.value = CloudConnectionState.Disconnected
         }
     }

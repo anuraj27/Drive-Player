@@ -62,7 +62,7 @@ fun AppNavigation() {
                 },
                 downloadsContent = {
                     DownloadsScreen(
-                        onPlayDownload = { uri ->
+                        onPlayDownload = { uri, fileId ->
                             val syntheticVideo = LocalVideo(
                                 id = -1L,
                                 title = uri.lastPathSegment ?: "Downloaded Video",
@@ -73,6 +73,9 @@ fun AppNavigation() {
                                 folderName = "Downloads",
                                 folderPath = "",
                                 dateModified = 0L,
+                                // Stable key tied to the Drive file id — survives across launches
+                                // and matches the same file regardless of where it was downloaded.
+                                positionKey = "download_$fileId",
                             )
                             activeTab = HomeTab.DOWNLOADS
                             playerSession++

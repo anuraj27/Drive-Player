@@ -19,7 +19,6 @@
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="unspecified"
-            android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|screenLayout"
             android:theme="@style/Theme.DrivePlayer">
             <intent-filter>
@@ -27,15 +26,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <receiver
-            android:name=".ui.downloads.DownloadNotificationReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.driveplayer.DOWNLOAD_CANCEL" />
-                <action android:name="com.driveplayer.DOWNLOAD_RETRY" />
-            </intent-filter>
-        </receiver>
 
     </application>
 </manifest>

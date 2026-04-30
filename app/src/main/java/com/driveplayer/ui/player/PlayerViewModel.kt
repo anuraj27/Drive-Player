@@ -15,7 +15,6 @@ import com.driveplayer.ui.player.controllers.SyncController
 class PlayerViewModel(
     context: Context,
     repo: DriveRepository?,
-    accessToken: String?,
     videoFile: DriveFile?,
     siblingFiles: List<DriveFile>,
     localVideo: LocalVideo?,
@@ -23,7 +22,6 @@ class PlayerViewModel(
 
     val playerController = PlayerController(
         context = context,
-        accessToken = accessToken,
         repo = repo,
         scope = viewModelScope,
         watchHistoryStore = AppModule.watchHistoryStore,
@@ -64,12 +62,14 @@ class PlayerViewModel(
     class Factory(
         private val context: Context,
         private val repo: DriveRepository?,
-        private val accessToken: String?,
+        // Kept on the API to avoid disrupting AppNavigation; the token now flows through
+        // AppModule's active credentials (set in CloudViewModel.connectWith).
+        @Suppress("UNUSED_PARAMETER") accessToken: String? = null,
         private val videoFile: DriveFile?,
         private val siblingFiles: List<DriveFile>,
         private val localVideo: LocalVideo? = null,
     ) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>) =
-            PlayerViewModel(context, repo, accessToken, videoFile, siblingFiles, localVideo) as T
+            PlayerViewModel(context, repo, videoFile, siblingFiles, localVideo) as T
     }
 }

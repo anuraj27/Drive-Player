@@ -15,6 +15,13 @@ data class LocalVideo(
     val folderName: String,
     val folderPath: String,
     val dateModified: Long,   // epoch seconds
+    /**
+     * Optional explicit key used by the resumable-position store. When null we fall back
+     * to "local_<MediaStore id>". Non-null is used for synthetic videos (e.g. played
+     * downloads) where [id] is `-1L` but we still want resume support — the caller passes
+     * something stable like "download_<driveFileId>".
+     */
+    val positionKey: String? = null,
 ) {
     val formattedDuration: String
         get() {

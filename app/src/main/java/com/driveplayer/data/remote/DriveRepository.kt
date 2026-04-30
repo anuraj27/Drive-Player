@@ -61,8 +61,11 @@ class DriveRepository(private val api: DriveApiService) {
 
     /** Searches across all of Drive for video files whose name contains [query]. */
     suspend fun searchVideos(query: String): Result<List<DriveFile>> = runCatching {
+        // Order matters: escape backslashes BEFORE single quotes, otherwise the
+        // backslash inserted by the quote-escape gets re-escaped and the query breaks.
+        val safeQuery = query.replace("\\", "\\\\").replace("'", "\\'")
         val q = buildString {
-            append("name contains '${query.replace("'", "\\'")}'")
+            append("name contains '$safeQuery'")
             append(" and trashed = false")
             append(" and mimeType contains 'video/'")
         }

@@ -25,9 +25,9 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 
-# ExoPlayer / Media3
--keep class androidx.media3.** { *; }
--dontwarn androidx.media3.**
+# libVLC — JNI bridge looks up these classes/methods by name from native code.
+-keep class org.videolan.libvlc.** { *; }
+-dontwarn org.videolan.libvlc.**
 
 # Google Sign-In
 -keep class com.google.android.gms.** { *; }

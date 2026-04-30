@@ -14,10 +14,14 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import com.driveplayer.BuildConfig
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.atomic.AtomicReference
 
 private const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 private const val DRIVE_BASE_URL = "https://www.googleapis.com/"
@@ -70,18 +74,72 @@ object AppModule {
         GoogleSignInHelper(appContext, googleSignInClient)
     }
 
+    // ── Active credentials ───────────────────────────────────────────────────
+    // Single source of truth for the OAuth Bearer token. The OkHttp interceptor,
+    // OkHttp Authenticator, and DriveAuthProxy all read from here so that a refresh
+    // automatically propagates everywhere — including the localhost streaming proxy.
+    private val activeToken = AtomicReference<String?>(null)
+    private val activeEmail = AtomicReference<String?>(null)
+    private val refreshMutex = Mutex()
+
+    fun currentAccessToken(): String? = activeToken.get()
+    fun currentAccountEmail(): String? = activeEmail.get()
+
+    fun setActiveCredentials(email: String, token: String) {
+        activeEmail.set(email)
+        activeToken.set(token)
+    }
+
+    fun clearActiveCredentials() {
+        activeEmail.set(null)
+        activeToken.set(null)
+    }
+
     /**
-     * Builds an OkHttpClient that injects Authorization header on every request.
-     * The same client is reused by both Retrofit AND ExoPlayer's data source factory
-     * — one connection pool, consistent config.
+     * Invalidates the current token and fetches a fresh one for [activeEmail].
+     * Throws if no email is set or if the account is no longer on the device.
+     * Coalesced via [refreshMutex] so concurrent 401s don't trigger N parallel refreshes.
      */
-    fun buildOkHttpClient(accessToken: String): OkHttpClient =
+    suspend fun refreshAccessToken(): String = refreshMutex.withLock {
+        val email = activeEmail.get()
+            ?: throw IllegalStateException("No active account; cannot refresh token")
+        val helper = googleSignInHelper
+        val current = activeToken.get()
+        if (current != null) {
+            runCatching { helper.invalidateToken(current) }
+        }
+        val fresh = helper.getAccessTokenForEmail(email)
+        activeToken.set(fresh)
+        fresh
+    }
+
+    /**
+     * Builds an OkHttpClient that pulls the current Bearer token from [activeToken]
+     * on every request (so it always sends the latest token), and on a 401 response
+     * triggers a synchronous refresh and retries once.
+     */
+    fun buildOkHttpClient(): OkHttpClient =
         OkHttpClient.Builder()
             .addInterceptor { chain ->
-                val req = chain.request().newBuilder()
-                    .addHeader("Authorization", "Bearer $accessToken")
-                    .build()
+                val token = activeToken.get()
+                val req = if (token != null) {
+                    chain.request().newBuilder()
+                        .header("Authorization", "Bearer $token")
+                        .build()
+                } else chain.request()
                 chain.proceed(req)
+            }
+            .authenticator { _, response ->
+                // Retry once. If the previous response already came back with our retry,
+                // OkHttp automatically gives up to avoid an infinite loop.
+                if (response.code != 401) return@authenticator null
+                if (response.priorResponse != null) return@authenticator null
+                val refreshed = runCatching {
+                    runBlocking { refreshAccessToken() }
+                }.getOrNull() ?: return@authenticator null
+                response.request.newBuilder()
+                    .header("Authorization", "Bearer $refreshed")
+                    .build()
             }
             .apply {
                 if (BuildConfig.DEBUG) addInterceptor(
@@ -90,8 +148,8 @@ object AppModule {
             }
             .build()
 
-    fun buildDriveRepository(accessToken: String): DriveRepository {
-        val client = buildOkHttpClient(accessToken)
+    fun buildDriveRepository(): DriveRepository {
+        val client = buildOkHttpClient()
         val retrofit = Retrofit.Builder()
             .baseUrl(DRIVE_BASE_URL)
             .client(client)

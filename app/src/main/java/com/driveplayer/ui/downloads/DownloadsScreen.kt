@@ -30,7 +30,7 @@ import com.driveplayer.ui.theme.*
 
 @Composable
 fun DownloadsScreen(
-    onPlayDownload: (Uri) -> Unit,
+    onPlayDownload: (Uri, String) -> Unit,
     vm: DownloadsViewModel = viewModel(),
 ) {
     val downloads by vm.downloads.collectAsStateWithLifecycle()
@@ -105,7 +105,7 @@ fun DownloadsScreen(
                         canRetry = dp.entry.accessToken != null,
                         onPlay = {
                             val uri = vm.getPlayUri(dp.entry)
-                            if (uri != null) onPlayDownload(uri)
+                            if (uri != null) onPlayDownload(uri, dp.entry.fileId)
                         },
                         onCancel = { vm.cancel(dp.entry) },
                         onRetry = { vm.retry(dp.entry) },
