@@ -106,6 +106,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val FALLBACK_SNAPSHOT = SettingsStore.Snapshot(
             defaultHomeTab            = SettingsStore.Defaults.HOME_TAB,
             themeMode                 = SettingsStore.Defaults.THEME_MODE,
+            localBrowserViewMode      = SettingsStore.Defaults.VIEW_MODE,
+            cloudBrowserViewMode      = SettingsStore.Defaults.VIEW_MODE,
             resumePlayback            = SettingsStore.Defaults.RESUME_PLAYBACK,
             defaultPlaybackSpeed      = SettingsStore.Defaults.PLAYBACK_SPEED,
             skipDurationMs            = SettingsStore.Defaults.SKIP_DURATION_MS,

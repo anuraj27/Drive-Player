@@ -10,6 +10,7 @@ import com.driveplayer.player.DownloadEntry
 import com.driveplayer.player.DownloadService
 import com.driveplayer.player.DownloadStatus
 import com.driveplayer.player.PinnedFolder
+import com.driveplayer.player.PlaybackPositionStore
 import com.driveplayer.player.RecentSearchStore
 import com.driveplayer.player.WatchEntry
 import kotlinx.coroutines.CancellationException
@@ -95,9 +96,82 @@ class FileBrowserViewModel(
         AppModule.watchHistoryStore.recentlyWatched()
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    // ── Watch progress for embedded list-item bars ──────────────────────────
+    //
+    // Same pattern as LocalBrowserViewModel — we read the whole positions map
+    // up front and refresh on (re)load so item composables can render the
+    // sub-thumbnail progress line via an O(1) `positions[file.id]` lookup.
+
+    private val positionStore = PlaybackPositionStore(AppModule.appContext)
+    private val _positions = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val positions: StateFlow<Map<String, Long>> = _positions
+
+    private fun refreshPositions() {
+        _positions.value = positionStore.allPositions()
+    }
+
+    /** "LIST" or "GRID" — toggled by the top-bar icon and persisted to
+     *  [com.driveplayer.data.SettingsStore.cloudBrowserViewMode] independently
+     *  of the local tab. */
+    val viewMode: StateFlow<String> =
+        AppModule.settingsStore.cloudBrowserViewMode
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "LIST")
+
+    fun toggleViewMode() {
+        viewModelScope.launch {
+            AppModule.settingsStore.setCloudBrowserViewMode(
+                if (viewMode.value == "GRID") "LIST" else "GRID"
+            )
+        }
+    }
+
+    // ── Folder thumbnail cache ─────────────────────────────────────────────
+    //
+    // Cloud folders carry no children in their metadata — to show a 2x2
+    // collage we have to listFolder(folderId) once. Map keyed by folderId →
+    // up to 4 child thumbnailLink URLs. Bounded with a soft cap so a user
+    // that scrolls a 10k-folder Drive doesn't keep N HTTP responses pinned.
+    private val _folderThumbnails = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val folderThumbnails: StateFlow<Map<String, List<String>>> = _folderThumbnails
+    private val folderThumbnailsInFlight = mutableSetOf<String>()
+    private val folderThumbCacheCap = 64
+
+    /**
+     * Lazily fetch up to 4 child video thumbnails for [folderId] for the
+     * folder-collage UI. Idempotent: callers may invoke per-row in a
+     * `LazyColumn`/`LazyVerticalGrid` and we'll only do one network round
+     * trip per folder per session.
+     */
+    fun ensureFolderThumbnails(folderId: String) {
+        if (_folderThumbnails.value.containsKey(folderId)) return
+        if (!folderThumbnailsInFlight.add(folderId)) return
+        viewModelScope.launch {
+            val urls = repo.listFolder(folderId)
+                .getOrNull()
+                ?.asSequence()
+                ?.filter { it.isVideo }
+                ?.mapNotNull { it.thumbnailLink }
+                ?.take(4)
+                ?.toList()
+                ?: emptyList()
+            // Soft eviction: when the cache crosses the cap, drop the oldest
+            // half. Drop is naive (insertion order from a HashMap is not
+            // strictly LRU) but good enough for a thumbnail cache.
+            val current = _folderThumbnails.value
+            val next = if (current.size + 1 > folderThumbCacheCap) {
+                current.entries.drop(current.size / 2).associate { it.toPair() }
+            } else current
+            _folderThumbnails.value = next + (folderId to urls)
+            folderThumbnailsInFlight.remove(folderId)
+        }
+    }
+
     // ── Init ─────────────────────────────────────────────────────────────────
 
-    init { loadCurrentFolder() }
+    init {
+        refreshPositions()
+        loadCurrentFolder()
+    }
 
     // ── Folder navigation ────────────────────────────────────────────────────
 
@@ -141,7 +215,10 @@ class FileBrowserViewModel(
         } else false
     }
 
-    fun refresh() = loadCurrentFolder()
+    fun refresh() {
+        refreshPositions()
+        loadCurrentFolder()
+    }
 
     private fun loadCurrentFolder() {
         _state.value = BrowserState.Loading
@@ -287,6 +364,7 @@ class FileBrowserViewModel(
                     accessToken = accessToken,
                     status = DownloadStatus.QUEUED,
                     enqueuedAt = System.currentTimeMillis(),
+                    thumbnailLink = file.thumbnailLink,
                 )
             )
             // Wake the foreground service so the queue keeps advancing even if

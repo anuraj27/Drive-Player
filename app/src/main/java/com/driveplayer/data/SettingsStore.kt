@@ -51,6 +51,24 @@ class SettingsStore(private val context: Context) {
         context.settingsDataStore.edit { it[KEY_THEME_MODE] = value }
     }
 
+    /** Browse-screen layout: "LIST" | "GRID". Stored independently per tab so
+     *  a user who likes a tile-grid for cloud videos can still keep a denser
+     *  list for local files (or vice versa). Mutated by the toggle button in
+     *  each browse screen's top bar. */
+    val localBrowserViewMode: Flow<String> = context.settingsDataStore.data
+        .map { it[KEY_LOCAL_VIEW_MODE] ?: Defaults.VIEW_MODE }
+
+    suspend fun setLocalBrowserViewMode(value: String) {
+        context.settingsDataStore.edit { it[KEY_LOCAL_VIEW_MODE] = value }
+    }
+
+    val cloudBrowserViewMode: Flow<String> = context.settingsDataStore.data
+        .map { it[KEY_CLOUD_VIEW_MODE] ?: Defaults.VIEW_MODE }
+
+    suspend fun setCloudBrowserViewMode(value: String) {
+        context.settingsDataStore.edit { it[KEY_CLOUD_VIEW_MODE] = value }
+    }
+
     // ── Playback ─────────────────────────────────────────────────────────────
 
     /** Resume from the last saved playback position when reopening a video. */
@@ -278,6 +296,8 @@ class SettingsStore(private val context: Context) {
         Snapshot(
             defaultHomeTab            = prefs[KEY_DEFAULT_HOME_TAB] ?: Defaults.HOME_TAB,
             themeMode                 = prefs[KEY_THEME_MODE] ?: Defaults.THEME_MODE,
+            localBrowserViewMode      = prefs[KEY_LOCAL_VIEW_MODE] ?: Defaults.VIEW_MODE,
+            cloudBrowserViewMode      = prefs[KEY_CLOUD_VIEW_MODE] ?: Defaults.VIEW_MODE,
             resumePlayback            = prefs[KEY_RESUME_PLAYBACK] ?: Defaults.RESUME_PLAYBACK,
             defaultPlaybackSpeed      = prefs[KEY_DEFAULT_SPEED] ?: Defaults.PLAYBACK_SPEED,
             skipDurationMs            = prefs[KEY_SKIP_DURATION_MS] ?: Defaults.SKIP_DURATION_MS,
@@ -328,6 +348,8 @@ class SettingsStore(private val context: Context) {
     data class Snapshot(
         val defaultHomeTab: String,
         val themeMode: String,
+        val localBrowserViewMode: String,
+        val cloudBrowserViewMode: String,
         val resumePlayback: Boolean,
         val defaultPlaybackSpeed: Float,
         val skipDurationMs: Long,
@@ -359,6 +381,7 @@ class SettingsStore(private val context: Context) {
     object Defaults {
         const val HOME_TAB = "CLOUD"
         const val THEME_MODE = "SYSTEM"          // SYSTEM | DARK | LIGHT
+        const val VIEW_MODE = "LIST"             // LIST | GRID
         const val RESUME_PLAYBACK = true
         const val PLAYBACK_SPEED = 1.0f
         const val SKIP_DURATION_MS = 10_000L
@@ -377,6 +400,8 @@ class SettingsStore(private val context: Context) {
     private companion object {
         // Library
         val KEY_DEFAULT_HOME_TAB     = stringPreferencesKey("default_home_tab")
+        val KEY_LOCAL_VIEW_MODE      = stringPreferencesKey("local_browser_view_mode")
+        val KEY_CLOUD_VIEW_MODE      = stringPreferencesKey("cloud_browser_view_mode")
         // Appearance
         val KEY_THEME_MODE           = stringPreferencesKey("theme_mode")
         // Playback

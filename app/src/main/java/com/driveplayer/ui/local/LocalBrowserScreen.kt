@@ -10,6 +10,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -36,6 +39,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.local.LocalVideoRepository
 import com.driveplayer.data.local.VideoFolder
+import com.driveplayer.image.FolderCollageThumbnail
+import com.driveplayer.image.LocalVideoThumbnail
+import com.driveplayer.ui.common.MediaGridCard
 import com.driveplayer.ui.common.TopBarOverflow
 import com.driveplayer.ui.theme.*
 
@@ -54,6 +60,8 @@ fun LocalBrowserScreen(
     val searchQuery    by vm.searchQuery.collectAsStateWithLifecycle()
     val searchState    by vm.searchState.collectAsStateWithLifecycle()
     val recentSearches by vm.recentSearches.collectAsStateWithLifecycle()
+    val positions by vm.positions.collectAsStateWithLifecycle()
+    val viewMode by vm.viewMode.collectAsStateWithLifecycle()
 
     val searchFocusRequester = remember { FocusRequester() }
     LaunchedEffect(isSearchActive) {
@@ -155,6 +163,21 @@ fun LocalBrowserScreen(
                         IconButton(onClick = { vm.activateSearch() }) {
                             Icon(Icons.Default.Search, contentDescription = "Search", tint = TextSecondary)
                         }
+                        // List/grid toggle. Icon shows the *target* layout
+                        // (i.e. tap "GridView" to enter grid mode, then it
+                        // flips to a list icon so a second tap returns to
+                        // the list). Same convention Drive / Photos use.
+                        @Suppress("DEPRECATION")
+                        val viewListIcon = Icons.Default.ViewList
+                        IconButton(onClick = { vm.toggleViewMode() }) {
+                            Icon(
+                                imageVector = if (viewMode == "GRID")
+                                    viewListIcon
+                                else Icons.Default.GridView,
+                                contentDescription = if (viewMode == "GRID") "Show as list" else "Show as grid",
+                                tint = TextSecondary,
+                            )
+                        }
                         TopBarOverflow(
                             onOpenSettings = onOpenSettings,
                             onRefresh = { vm.refresh() },
@@ -192,13 +215,22 @@ fun LocalBrowserScreen(
                     query = searchQuery,
                     searchState = searchState,
                     recentSearches = recentSearches,
+                    positions = positions,
+                    viewMode = viewMode,
                     onRecentClick = { vm.setSearchQuery(it) },
                     onRecentRemove = { vm.removeRecentSearch(it) },
                     onClearRecents = { vm.clearRecentSearches() },
                     onVideoClick = onVideoClick,
                 )
             } else {
-                BrowseContent(state = state, onOpenFolder = { vm.openFolder(it) }, onVideoClick = onVideoClick, onRetry = { vm.refresh() })
+                BrowseContent(
+                    state = state,
+                    positions = positions,
+                    viewMode = viewMode,
+                    onOpenFolder = { vm.openFolder(it) },
+                    onVideoClick = onVideoClick,
+                    onRetry = { vm.refresh() },
+                )
             }
         }
     }
@@ -207,6 +239,8 @@ fun LocalBrowserScreen(
 @Composable
 private fun BrowseContent(
     state: LocalBrowserState,
+    positions: Map<String, Long>,
+    viewMode: String,
     onOpenFolder: (VideoFolder) -> Unit,
     onVideoClick: (LocalVideo) -> Unit,
     onRetry: () -> Unit,
@@ -246,11 +280,35 @@ private fun BrowseContent(
                         Spacer(Modifier.height(12.dp))
                         Text("No videos found", color = TextMuted, style = MaterialTheme.typography.bodyLarge)
                     }
+                } else if (viewMode == "GRID") {
+                    LazyVerticalGrid(
+                        // 168dp min cell yields 2 columns on small phones,
+                        // 3 on a 6"+ device, 4 on a foldable / tablet — chosen
+                        // so a 16:9 thumbnail still reads at ~110-150dp tall.
+                        columns = GridCells.Adaptive(minSize = 168.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(s.folders, key = { it.path }) { folder ->
+                            MediaGridCard(
+                                title = folder.name,
+                                subtitle = "${folder.videoCount} video${if (folder.videoCount != 1) "s" else ""}",
+                                progressFraction = 0f,
+                                qualityLabel = null,
+                                onClick = { onOpenFolder(folder) },
+                                thumbnail = {
+                                    FolderCollageThumbnail(folder = folder, modifier = Modifier.fillMaxSize())
+                                },
+                            )
+                        }
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(s.folders, key = { it.path }) { folder ->
                             FolderItem(folder) { onOpenFolder(folder) }
@@ -269,14 +327,38 @@ private fun BrowseContent(
                         Spacer(Modifier.height(12.dp))
                         Text("No videos in this folder", color = TextMuted)
                     }
+                } else if (viewMode == "GRID") {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 168.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(s.videos, key = { it.id }) { video ->
+                            MediaGridCard(
+                                title = video.title,
+                                subtitle = "${video.formattedDuration}  ·  ${video.formattedSize}",
+                                progressFraction = progressFractionFor(video, positions),
+                                qualityLabel = video.qualityLabel,
+                                onClick = { onVideoClick(video) },
+                                thumbnail = { LocalVideoThumbnail(video = video, modifier = Modifier.fillMaxSize()) },
+                            )
+                        }
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(s.videos, key = { it.id }) { video ->
-                            VideoItem(video, showFolder = false) { onVideoClick(video) }
+                            VideoItem(
+                                video = video,
+                                showFolder = false,
+                                progressFraction = progressFractionFor(video, positions),
+                                onClick = { onVideoClick(video) },
+                            )
                         }
                     }
                 }
@@ -291,6 +373,8 @@ private fun LocalSearchContent(
     query: String,
     searchState: LocalSearchState?,
     recentSearches: List<String>,
+    positions: Map<String, Long>,
+    viewMode: String,
     onRecentClick: (String) -> Unit,
     onRecentRemove: (String) -> Unit,
     onClearRecents: () -> Unit,
@@ -356,6 +440,25 @@ private fun LocalSearchContent(
                     Spacer(Modifier.height(12.dp))
                     Text("No videos found for \"$query\"", color = TextMuted)
                 }
+            } else if (viewMode == "GRID") {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 168.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(searchState.videos, key = { it.id }) { video ->
+                        MediaGridCard(
+                            title = video.title,
+                            subtitle = "${video.formattedDuration}  ·  ${video.folderName}",
+                            progressFraction = progressFractionFor(video, positions),
+                            qualityLabel = video.qualityLabel,
+                            onClick = { onVideoClick(video) },
+                            thumbnail = { LocalVideoThumbnail(video = video, modifier = Modifier.fillMaxSize()) },
+                        )
+                    }
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -373,7 +476,12 @@ private fun LocalSearchContent(
                     items(searchState.videos, key = { it.id }) { video ->
                         // showFolder = true so the user can disambiguate
                         // identically-named files across different folders.
-                        VideoItem(video, showFolder = true) { onVideoClick(video) }
+                        VideoItem(
+                            video = video,
+                            showFolder = true,
+                            progressFraction = progressFractionFor(video, positions),
+                            onClick = { onVideoClick(video) },
+                        )
                     }
                 }
             }
@@ -445,20 +553,19 @@ private fun FolderItem(folder: VideoFolder, onClick: () -> Unit) {
             .clip(RoundedCornerShape(14.dp))
             .background(CardSurface)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
+        // 96x54 (16:9) collage replaces the previous solid-tinted Folder icon.
+        // Builds straight from the folder's own videos so users recognise the
+        // content without opening the folder.
+        FolderCollageThumbnail(
+            folder = folder,
             modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(AccentSecondary.copy(alpha = 0.15f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Default.Folder, null, tint = AccentSecondary, modifier = Modifier.size(24.dp))
-        }
+                .size(width = 96.dp, height = 54.dp),
+        )
 
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -485,6 +592,7 @@ private fun FolderItem(folder: VideoFolder, onClick: () -> Unit) {
 private fun VideoItem(
     video: LocalVideo,
     showFolder: Boolean,
+    progressFraction: Float,
     onClick: () -> Unit,
 ) {
     Row(
@@ -493,20 +601,46 @@ private fun VideoItem(
             .clip(RoundedCornerShape(14.dp))
             .background(CardSurface)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Thumbnail + overlays in a single Box so the quality chip + progress
+        // bar can be positioned relative to the bitmap. 96x54 keeps a clean
+        // 16:9 aspect for landscape content; portrait clips letterbox.
         Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(AccentPrimary.copy(alpha = 0.15f)),
-            contentAlignment = Alignment.Center
+            modifier = Modifier.size(width = 96.dp, height = 54.dp),
         ) {
-            Icon(Icons.Default.VideoFile, null, tint = AccentPrimary, modifier = Modifier.size(24.dp))
+            LocalVideoThumbnail(
+                video = video,
+                modifier = Modifier.fillMaxSize(),
+            )
+            // Quality chip (e.g. "1080p") in the top-right. Hidden when the
+            // MediaStore index didn't populate width/height for this clip.
+            video.qualityLabel?.let { label ->
+                QualityChip(
+                    text = label,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp),
+                )
+            }
+            // Watch-progress line — only when the user has started this video.
+            // 5 s threshold (mirroring PlaybackPositionStore.save) hides
+            // accidental open-and-close noise.
+            if (progressFraction > 0f) {
+                LinearProgressIndicator(
+                    progress = { progressFraction },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(2.dp),
+                    color = AccentPrimary,
+                    trackColor = Color.White.copy(alpha = 0.18f),
+                )
+            }
         }
 
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -534,4 +668,39 @@ private fun VideoItem(
             )
         }
     }
+}
+
+@Composable
+internal fun QualityChip(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.65f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/**
+ * Look up the watched-fraction (0f..1f) for [video] in a positions map keyed
+ * the same way as [com.driveplayer.player.PlaybackPositionStore]. Returns 0f
+ * when there's no entry, the saved position is below the 5s threshold, or
+ * the duration is unknown.
+ */
+internal fun progressFractionFor(video: LocalVideo, positions: Map<String, Long>): Float {
+    val key = video.positionKey ?: if (video.id >= 0) "local_${video.id}" else null
+    val saved = key?.let { positions[it] } ?: return 0f
+    if (saved <= 5_000L) return 0f
+    val dur = video.duration
+    if (dur <= 0L) return 0f
+    return (saved.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
 }

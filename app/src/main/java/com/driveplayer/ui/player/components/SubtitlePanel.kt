@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.driveplayer.ui.theme.AccentPrimary
+import com.driveplayer.ui.theme.CardSurface
 import com.driveplayer.ui.theme.SurfaceVariant
 import com.driveplayer.ui.theme.TextPrimary
 import com.driveplayer.ui.theme.TextSecondary
@@ -106,7 +107,7 @@ fun SubtitlePanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF2C2C2C))
+                        .background(CardSurface)
                 ) {
                     availableSubtitleTracks.forEachIndexed { index, name ->
                         val isSelected = selectedSubtitleTrack == index

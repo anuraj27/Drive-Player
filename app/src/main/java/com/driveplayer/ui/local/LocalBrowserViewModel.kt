@@ -7,6 +7,7 @@ import com.driveplayer.data.local.LocalVideo
 import com.driveplayer.data.local.LocalVideoRepository
 import com.driveplayer.data.local.VideoFolder
 import com.driveplayer.di.AppModule
+import com.driveplayer.player.PlaybackPositionStore
 import com.driveplayer.player.RecentSearchStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -69,12 +70,51 @@ class LocalBrowserViewModel(private val repo: LocalVideoRepository) : ViewModel(
         AppModule.recentSearchStore.recents(RecentSearchStore.Namespace.LOCAL)
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    init { loadFolders() }
+    /**
+     * Bulk snapshot of every saved playback position, refreshed each time we
+     * (re)load the folder/video list. Item composables read this map keyed by
+     * `local_<id>` (or whatever the screen passes) to render the embedded
+     * watch-progress bar — a single read instead of N SharedPreferences hits
+     * during recomposition.
+     *
+     * Not reactive (SharedPreferences has no built-in flow), but the player
+     * writes positions only every 5s while playing and the user can't see
+     * the browse screen and the player at the same time. We refresh on
+     * every (re)load and on `refresh()`, which covers every realistic case.
+     */
+    private val positionStore = PlaybackPositionStore(AppModule.appContext)
+    private val _positions = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val positions: StateFlow<Map<String, Long>> = _positions
+
+    /** "LIST" or "GRID" — driven by the toggle button in the top bar and
+     *  persisted to [com.driveplayer.data.SettingsStore.localBrowserViewMode]
+     *  so the user's preference survives process death. */
+    val viewMode: StateFlow<String> =
+        AppModule.settingsStore.localBrowserViewMode
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "LIST")
+
+    fun toggleViewMode() {
+        viewModelScope.launch {
+            AppModule.settingsStore.setLocalBrowserViewMode(
+                if (viewMode.value == "GRID") "LIST" else "GRID"
+            )
+        }
+    }
+
+    init {
+        refreshPositions()
+        loadFolders()
+    }
+
+    private fun refreshPositions() {
+        _positions.value = positionStore.allPositions()
+    }
 
     fun loadFolders() {
         _state.value = LocalBrowserState.Loading
         _isInFolder.value = false
         currentFolderPath = null
+        refreshPositions()
         viewModelScope.launch {
             repo.getVideoFolders()
                 .onSuccess { _state.value = LocalBrowserState.Folders(it) }
@@ -86,6 +126,7 @@ class LocalBrowserViewModel(private val repo: LocalVideoRepository) : ViewModel(
         _state.value = LocalBrowserState.Loading
         _isInFolder.value = true
         currentFolderPath = folder.path
+        refreshPositions()
         viewModelScope.launch {
             repo.getVideosInFolder(folder.path)
                 .onSuccess { _state.value = LocalBrowserState.Videos(folder.name, it) }
@@ -105,6 +146,7 @@ class LocalBrowserViewModel(private val repo: LocalVideoRepository) : ViewModel(
     }
 
     fun refresh() {
+        refreshPositions()
         val path = currentFolderPath
         if (path != null && _isInFolder.value) {
             _state.value = LocalBrowserState.Loading

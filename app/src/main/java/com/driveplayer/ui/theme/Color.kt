@@ -29,39 +29,52 @@ data class AppColors(
     val textMuted:      Color,
     val colorError:     Color,
     val colorSuccess:   Color,
+    val colorWarning:   Color,
     /** True for the dark variant — used by status-bar icon colour selection. */
     val isDark:         Boolean,
 )
 
+/**
+ * "Cinema dark" palette — a deep cool-charcoal base that lets thumbnails
+ * pop, a confident blue primary for actions / progress / selected states,
+ * and a soft lavender for "watched / completed" accents. Designed to hold
+ * up at low brightness in dark rooms without crushing UI affordances.
+ */
 val DarkAppColors = AppColors(
-    background      = Color(0xFF0D0F14),
-    surfaceVariant  = Color(0xFF1A1D25),
-    cardSurface     = Color(0xFF22263A),
-    accentPrimary   = Color(0xFF4F8EF7),
-    accentSecondary = Color(0xFF7B5CF0),
-    accentGlow      = Color(0xFF2D6BE4),
-    textPrimary     = Color(0xFFF0F2FF),
-    textSecondary   = Color(0xFF8B92B3),
-    textMuted       = Color(0xFF505570),
-    colorError      = Color(0xFFE05C5C),
-    colorSuccess    = Color(0xFF4CAF80),
+    background      = Color(0xFF0B0F17), // deepest layer — Scaffold background
+    surfaceVariant  = Color(0xFF161B26), // top app bar, bottom navigation
+    cardSurface     = Color(0xFF1F2533), // list rows, settings rows, chips
+    accentPrimary   = Color(0xFF5E9BFF), // selected tab, FAB, progress, primary buttons
+    accentSecondary = Color(0xFFC4B5FD), // watched badges, "downloaded" tint
+    accentGlow      = Color(0xFF3B6FCC), // gradient depth (kept on the API)
+    textPrimary     = Color(0xFFECEEF5),
+    textSecondary   = Color(0xFF9CA3B8),
+    textMuted       = Color(0xFF5B6377),
+    colorError      = Color(0xFFF87171),
+    colorSuccess    = Color(0xFF34D399), // completed downloads
+    colorWarning    = Color(0xFFFBBF24), // queued / in-progress downloads
     isDark          = true,
 )
 
+/**
+ * Mirror palette for the rare user who picks Light mode for browse screens.
+ * Player chrome stays locked to Dark regardless. The off-white is
+ * purposely warm — pure #FFFFFF backgrounds tire the eye after a few
+ * minutes of scrolling.
+ */
 val LightAppColors = AppColors(
-    // Off-white background with subtle warmth — pure white tires the eye fast.
-    background      = Color(0xFFF7F8FB),
+    background      = Color(0xFFFAFBFC),
     surfaceVariant  = Color(0xFFFFFFFF),
-    cardSurface     = Color(0xFFEEF1F8),
-    // Same accent pair as dark theme so the brand reads consistently.
-    accentPrimary   = Color(0xFF2563EB),
+    cardSurface     = Color(0xFFF1F4FA),
+    accentPrimary   = Color(0xFF3B82F6),
     accentSecondary = Color(0xFF7C3AED),
     accentGlow      = Color(0xFF1D4ED8),
-    textPrimary     = Color(0xFF111827),
-    textSecondary   = Color(0xFF4B5563),
-    textMuted       = Color(0xFF9CA3AF),
+    textPrimary     = Color(0xFF0F172A),
+    textSecondary   = Color(0xFF475569),
+    textMuted       = Color(0xFF94A3B8),
     colorError      = Color(0xFFDC2626),
     colorSuccess    = Color(0xFF059669),
+    colorWarning    = Color(0xFFD97706),
     isDark          = false,
 )
 
@@ -83,3 +96,4 @@ val TextSecondary:   Color @Composable @ReadOnlyComposable get() = LocalAppColor
 val TextMuted:       Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.textMuted
 val ColorError:      Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.colorError
 val ColorSuccess:    Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.colorSuccess
+val ColorWarning:    Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.colorWarning

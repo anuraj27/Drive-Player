@@ -68,6 +68,12 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     debugImplementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
+    // Coil — Compose AsyncImage for cloud thumbnails (Drive thumbnailLink) and
+    // local MediaStore content:// thumbs. Coil 2.x ships its own OkHttp dependency
+    // and accepts a custom OkHttpClient on ImageLoader.Builder, which is how we
+    // inject the Bearer-token interceptor for authenticated Drive thumbnail URLs.
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
     // libVLC (VLC for Android) — broad codec/subtitle format support including PGS, ASS, etc.
     // Replaces Media3/ExoPlayer to fix subtitle decoder crashes and match VLC's format coverage.
     implementation("org.videolan.android:libvlc-all:3.6.0")

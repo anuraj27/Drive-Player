@@ -32,6 +32,12 @@ data class DownloadEntry(
     // auto-cleanup pass in DownloadService.onCreate. `null` for entries that
     // predate this field — they're skipped by cleanup until they finish again.
     val completedAt: Long? = null,
+    // Drive thumbnail URL captured at enqueue time so the Downloads UI can
+    // show a real preview while the file is in flight (the local file
+    // doesn't exist until completion). Stays usable for completed entries
+    // too, although those could fall back to a frame extracted from the
+    // local mp4 if the URL ever stops resolving.
+    val thumbnailLink: String? = null,
 )
 
 private val Context.downloadDataStore by preferencesDataStore(name = "downloads")

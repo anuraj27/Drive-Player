@@ -20,7 +20,10 @@ interface DriveApiService {
         // owners is required for the "shared with me" tab to render the owner row in FileItem.
         // parents is needed so a saved WatchEntry can later refetch its sibling files
         // (used to auto-attach an external .srt when reopening from Continue-Watching).
-        @Query("fields")    fields: String    = "files(id,name,mimeType,size,modifiedTime,thumbnailLink,owners(displayName,emailAddress),parents),nextPageToken",
+        // videoMediaMetadata gives us per-file duration + width/height for the
+        // "1080p / 4K" chip and the duration label on cloud cards. Drive
+        // returns it only for video MIME types; folders/SRTs come back null.
+        @Query("fields")    fields: String    = "files(id,name,mimeType,size,modifiedTime,thumbnailLink,owners(displayName,emailAddress),parents,videoMediaMetadata(durationMillis,width,height)),nextPageToken",
         @Query("pageSize")  pageSize: Int     = 100,
         @Query("orderBy")   orderBy: String   = "folder,name",
         @Query("pageToken") pageToken: String? = null,

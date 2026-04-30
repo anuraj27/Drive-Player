@@ -24,6 +24,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
+import com.driveplayer.image.withDriveSize
 import com.driveplayer.player.DownloadEntry
 import com.driveplayer.player.DownloadStatus
 import com.driveplayer.ui.theme.*
@@ -153,74 +155,50 @@ private fun DownloadItem(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(CardSurface)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // File icon with circular progress
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(AccentPrimary.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
-                when (dp.entry.status) {
-                    DownloadStatus.COMPLETED -> {
+            // 96x54 thumbnail. The Drive thumbnailLink works for queued /
+            // running / completed entries and even after the local file is
+            // gone — it stays cacheable as long as the source file exists in
+            // the user's Drive. Status-driven badge sits on top so the user
+            // doesn't lose the visual distinction we had with the icon-tile.
+            Box(modifier = Modifier.size(width = 96.dp, height = 54.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(AccentPrimary.copy(alpha = 0.12f)),
+                ) {
+                    val link = dp.entry.thumbnailLink?.let { withDriveSize(it, 220) }
+                    if (link != null) {
+                        AsyncImage(
+                            model = link,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        )
+                    } else {
                         Icon(
                             Icons.Default.VideoFile,
                             contentDescription = null,
-                            tint = AccentPrimary,
-                            modifier = Modifier.size(24.dp)
+                            tint = AccentPrimary.copy(alpha = 0.45f),
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(28.dp)
                         )
-                    }
-                    DownloadStatus.FAILED -> {
-                        Icon(
-                            Icons.Default.ErrorOutline,
-                            contentDescription = null,
-                            tint = ColorError,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    DownloadStatus.CANCELLED -> {
-                        Icon(
-                            Icons.Default.Cancel,
-                            contentDescription = null,
-                            tint = TextMuted,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    DownloadStatus.QUEUED -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = AccentSecondary,
-                            strokeWidth = 2.dp
-                        )
-                    }
-                    DownloadStatus.RUNNING -> {
-                        val animatedProgress by animateFloatAsState(
-                            targetValue = dp.fraction,
-                            animationSpec = tween(durationMillis = 300),
-                            label = "progress"
-                        )
-                        Box(contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(
-                                progress = { animatedProgress },
-                                modifier = Modifier.size(24.dp),
-                                color = AccentSecondary,
-                                strokeWidth = 2.dp,
-                                strokeCap = StrokeCap.Round
-                            )
-                            if (animatedProgress > 0.1f) {
-                                Text(
-                                    text = "${(animatedProgress * 100).toInt()}%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = AccentSecondary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
                     }
                 }
+                // Top-right status badge — small, dark, only when not the
+                // happy path of "completed" (those don't need a badge, the
+                // status chip below already says "Downloaded").
+                StatusBadge(
+                    status = dp.entry.status,
+                    fraction = dp.fraction,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp),
+                )
             }
 
             Spacer(Modifier.width(12.dp))
@@ -310,6 +288,48 @@ private fun DownloadItem(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Small overlay shown on the thumbnail's top-right corner. Mirrors the
+ * status iconography we used to draw inside the leading 44dp tile, but in
+ * a much more compact form (24dp) so it doesn't crowd the thumbnail.
+ * Hidden for COMPLETED — the StatusChip beneath already labels those.
+ */
+@Composable
+private fun StatusBadge(status: DownloadStatus, fraction: Float, modifier: Modifier = Modifier) {
+    val (icon, tint) = when (status) {
+        DownloadStatus.QUEUED    -> Icons.Default.HourglassTop to AccentSecondary
+        DownloadStatus.RUNNING   -> null to AccentSecondary
+        DownloadStatus.FAILED    -> Icons.Default.ErrorOutline to ColorError
+        DownloadStatus.CANCELLED -> Icons.Default.Cancel to TextMuted
+        DownloadStatus.COMPLETED -> return
+    }
+    Box(
+        modifier = modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        } else {
+            // Tiny circular progress matches the running state used elsewhere.
+            val animatedProgress by animateFloatAsState(
+                targetValue = fraction,
+                animationSpec = tween(durationMillis = 300),
+                label = "badge_progress",
+            )
+            CircularProgressIndicator(
+                progress = { animatedProgress.coerceIn(0f, 1f) },
+                modifier = Modifier.size(14.dp),
+                color = tint,
+                strokeWidth = 1.5.dp,
+                strokeCap = StrokeCap.Round,
+            )
         }
     }
 }

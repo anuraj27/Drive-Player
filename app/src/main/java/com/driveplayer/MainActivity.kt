@@ -10,7 +10,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import coil.Coil
 import com.driveplayer.di.AppModule
+import com.driveplayer.image.AppImageLoader
 import com.driveplayer.navigation.AppNavigation
 import com.driveplayer.player.DownloadService
 import com.driveplayer.player.DownloadStatus
@@ -35,6 +37,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppModule.init(this)
+        // Install the app-wide Coil ImageLoader so every implicit AsyncImage
+        // request shares the same disk/memory cache and the Bearer-token
+        // interceptor for Drive thumbnails. Must run after AppModule.init
+        // because the interceptor reads from AppModule.currentAccessToken().
+        Coil.setImageLoader(AppImageLoader.build(applicationContext))
 
         ensureNotificationPermission()
         handleIntent(intent)

@@ -1,25 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher foreground.
+
+  Identity: a stacked pair of "video cards" with a bold play triangle
+  centred on the front card. The stack reads as "library / Drive of
+  videos" rather than the generic "play button in a circle" the app
+  shipped with before, and the colours come straight from the new
+  Cinema-dark palette: card surface for the cards, accent-primary for
+  the back card glow, and an accent-primary→secondary gradient for the
+  triangle.
+
+  Geometry: every visible element fits inside the 72×72 adaptive-icon
+  safe zone (viewport coords 18..90) so circle, squircle, teardrop, and
+  rounded-square launcher masks all show the full design. The back card
+  is offset (+6, +6) so it peeks out behind the front card on the
+  bottom-right, the way a stack-of-cards illustration normally cheats.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Back card — soft accent-primary glow, low alpha so it reads as
+         "another video behind this one" instead of a separate element. -->
     <path
-        android:fillType="evenOdd"
-        android:pathData="M32,54C32,41.85 41.85,32 54,32C66.15,32 76,41.85 76,54C76,66.15 66.15,76 54,76C41.85,76 32,66.15 32,54ZM46,42L46,66L66,54L46,42Z">
+        android:pathData="M44,32 h32 a12,12 0 0 1 12,12 v32 a12,12 0 0 1 -12,12 h-32 a12,12 0 0 1 -12,-12 v-32 a12,12 0 0 1 12,-12 z"
+        android:fillColor="#5E9BFF"
+        android:fillAlpha="0.22" />
+
+    <!-- Front card — solid cardSurface, the same tone list rows use inside
+         the app so the icon and the in-app surface share a vocabulary. -->
+    <path
+        android:pathData="M38,26 h32 a12,12 0 0 1 12,12 v32 a12,12 0 0 1 -12,12 h-32 a12,12 0 0 1 -12,-12 v-32 a12,12 0 0 1 12,-12 z"
+        android:fillColor="#1F2533" />
+
+    <!-- One-pixel highlight along the top edge of the front card. Gives
+         the surface a subtle bevel under typical launcher lighting without
+         being loud. Drawn as a thin sliver clipped to the card's top. -->
+    <path
+        android:pathData="M50,26 h20 a12,12 0 0 1 12,12 v0 a12,12 0 0 0 -12,-12 h-32 a12,12 0 0 0 -12,12 v0 a12,12 0 0 1 12,-12 z"
+        android:fillColor="#5E9BFF"
+        android:fillAlpha="0.35" />
+
+    <!-- Play triangle — accent-primary→secondary linear gradient gives the
+         icon its "press me" affordance. Slightly inset from the card edges
+         (8dp on every side) and offset to honour the play-glyph rule that
+         the visual centre sits ~⅓ from the base, so the triangle appears
+         centred even though its geometric centre is left of the card's. -->
+    <path android:pathData="M42,38 L42,70 L70,54 z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:centerX="54"
-                android:centerY="54"
-                android:gradientRadius="35"
-                android:type="radial">
-                <item
-                    android:color="#4F8EF7"
-                    android:offset="0.0" />
-                <item
-                    android:color="#7B5CF0"
-                    android:offset="1.0" />
+                android:type="linear"
+                android:startX="42" android:startY="38"
+                android:endX="70"  android:endY="70">
+                <item android:offset="0.0" android:color="#5E9BFF" />
+                <item android:offset="1.0" android:color="#C4B5FD" />
             </gradient>
         </aapt:attr>
     </path>

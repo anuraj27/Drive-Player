@@ -106,6 +106,8 @@ class LocalVideoRepository(private val context: Context) {
             MediaStore.Video.Media.DATE_MODIFIED,
             MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
             MediaStore.Video.Media.MIME_TYPE,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT,
         )
 
         val selection = "${MediaStore.Video.Media.DURATION} > ?"
@@ -126,6 +128,11 @@ class LocalVideoRepository(private val context: Context) {
             val dateCol     = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
             val bucketCol   = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
             val mimeCol     = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
+            // Width/height are best-effort: older MediaStore indexes don't
+            // populate them for every container. `getColumnIndex` returns -1
+            // when the column isn't there, and we treat that as "unknown" (0).
+            val widthCol    = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
+            val heightCol   = cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)
 
             while (cursor.moveToNext()) {
                 val id   = cursor.getLong(idCol)
@@ -144,6 +151,8 @@ class LocalVideoRepository(private val context: Context) {
                 if (!isLikelyVideo(mime, path)) continue
 
                 val uri  = ContentUris.withAppendedId(collection, id)
+                val width  = if (widthCol  >= 0) cursor.getInt(widthCol)  else 0
+                val height = if (heightCol >= 0) cursor.getInt(heightCol) else 0
                 results += LocalVideo(
                     id          = id,
                     title       = cursor.getString(nameCol) ?: "Unknown",
@@ -154,6 +163,8 @@ class LocalVideoRepository(private val context: Context) {
                     folderName  = cursor.getString(bucketCol) ?: "Unknown",
                     folderPath  = path.substringBeforeLast('/'),
                     dateModified = cursor.getLong(dateCol),
+                    width       = width,
+                    height      = height,
                 )
             }
         }

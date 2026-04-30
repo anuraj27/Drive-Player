@@ -9,6 +9,13 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+// Both `items` extensions live under different scope receivers
+// (LazyListScope and LazyGridScope), so the compiler disambiguates by
+// receiver — we can import both.
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -36,11 +43,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.driveplayer.data.model.DriveFile
 import com.driveplayer.data.remote.DriveRepository
+import com.driveplayer.image.CloudFileThumbnail
+import com.driveplayer.image.CloudFolderCollageThumbnail
+import com.driveplayer.image.EmptyFolderThumbnail
+import com.driveplayer.image.withDriveSize
 import com.driveplayer.player.PinnedFolder
 import com.driveplayer.player.WatchEntry
 import com.driveplayer.ui.cloud.SavedAccount
+import com.driveplayer.ui.common.MediaGridCard
 import com.driveplayer.ui.common.TopBarOverflow
 import com.driveplayer.ui.theme.*
+import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,6 +82,9 @@ fun FileBrowserScreen(
     val recentlyWatched   by vm.recentlyWatched.collectAsStateWithLifecycle()
     val downloadedFileIds by vm.downloadedFileIds.collectAsStateWithLifecycle()
     val downloadingFileIds by vm.downloadingFileIds.collectAsStateWithLifecycle()
+    val positions by vm.positions.collectAsStateWithLifecycle()
+    val folderThumbnails by vm.folderThumbnails.collectAsStateWithLifecycle()
+    val viewMode by vm.viewMode.collectAsStateWithLifecycle()
 
     var showAccountMenu by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
@@ -223,6 +239,20 @@ fun FileBrowserScreen(
                     IconButton(onClick = { vm.activateSearch() }) {
                         Icon(Icons.Default.Search, contentDescription = "Search", tint = TextSecondary)
                     }
+                    // List/grid toggle — sits between the search button and
+                    // the account avatar. Same icon-flip convention as
+                    // LocalBrowserScreen so both browse tabs feel uniform.
+                    @Suppress("DEPRECATION")
+                    val viewListIcon = Icons.Default.ViewList
+                    IconButton(onClick = { vm.toggleViewMode() }) {
+                        Icon(
+                            imageVector = if (viewMode == "GRID")
+                                viewListIcon
+                            else Icons.Default.GridView,
+                            contentDescription = if (viewMode == "GRID") "Show as list" else "Show as grid",
+                            tint = TextSecondary,
+                        )
+                    }
                     Box {
                         IconButton(onClick = { showAccountMenu = true }) {
                             Box(
@@ -269,6 +299,8 @@ fun FileBrowserScreen(
                     recentSearches = recentSearches,
                     downloadedFileIds = downloadedFileIds,
                     downloadingFileIds = downloadingFileIds,
+                    positions = positions,
+                    viewMode = viewMode,
                     onRecentClick = { vm.setSearchQuery(it) },
                     onRecentRemove = { vm.removeRecentSearch(it) },
                     onClearRecents = { vm.clearRecentSearches() },
@@ -293,6 +325,10 @@ fun FileBrowserScreen(
                     pinnedFolders = pinnedFolders,
                     downloadedFileIds = downloadedFileIds,
                     downloadingFileIds = downloadingFileIds,
+                    positions = positions,
+                    folderThumbnails = folderThumbnails,
+                    viewMode = viewMode,
+                    onEnsureFolderThumbnails = { vm.ensureFolderThumbnails(it) },
                     onWatchEntryClick = { entry -> openWatchEntry(entry) },
                     onPinnedFolderClick = { vm.navigateToPinnedFolder(it) },
                     onFileClick = { file, siblings ->
@@ -319,6 +355,10 @@ private fun BrowseContent(
     pinnedFolders: List<PinnedFolder>,
     downloadedFileIds: Set<String>,
     downloadingFileIds: Set<String>,
+    positions: Map<String, Long>,
+    folderThumbnails: Map<String, List<String>>,
+    viewMode: String,
+    onEnsureFolderThumbnails: (String) -> Unit,
     onWatchEntryClick: (WatchEntry) -> Unit,
     onPinnedFolderClick: (PinnedFolder) -> Unit,
     onFileClick: (DriveFile, List<DriveFile>) -> Unit,
@@ -350,88 +390,220 @@ private fun BrowseContent(
         }
 
         is BrowserState.Success -> {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                // ── Continue Watching carousel ─────────────────────────────
-                if (isAtRoot && recentlyWatched.isNotEmpty()) {
-                    item(key = "continue_watching_header") {
-                        SectionHeader("Continue Watching")
-                    }
-                    item(key = "continue_watching_row") {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(recentlyWatched, key = { it.fileId }) { entry ->
-                                WatchCard(entry = entry, onClick = { onWatchEntryClick(entry) })
+            // Render only folders + videos. The repository deliberately also
+            // returns `.srt` files in `s.files` so the player can auto-attach
+            // an external subtitle that lives next to the video — but those
+            // sidecar files have no business taking up space in the user-
+            // facing browse list. We pass the unfiltered `s.files` as the
+            // sibling argument to onFileClick so the auto-attach lookup
+            // still has access to the subtitles.
+            val visibleFiles = s.files.filter { it.isFolder || it.isVideo }
+            if (viewMode == "GRID") {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 168.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // The horizontal "Continue Watching" + "Pinned Folders"
+                    // strips are inherently row-shaped and don't make sense
+                    // tiled inside the grid, so we span them across all
+                    // columns and let the per-tile cards live in the proper
+                    // grid below them.
+                    if (isAtRoot && recentlyWatched.isNotEmpty()) {
+                        item(key = "cw_header", span = { GridItemSpan(maxLineSpan) }) {
+                            SectionHeader("Continue Watching")
+                        }
+                        item(key = "cw_row", span = { GridItemSpan(maxLineSpan) }) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                items(recentlyWatched, key = { it.fileId }) { entry ->
+                                    WatchCard(entry = entry, onClick = { onWatchEntryClick(entry) })
+                                }
                             }
                         }
-                        Spacer(Modifier.height(8.dp))
                     }
-                }
-
-                // ── Pinned Folders row ─────────────────────────────────────
-                if (isAtRoot && pinnedFolders.isNotEmpty()) {
-                    item(key = "pinned_header") {
-                        SectionHeader("Pinned Folders")
-                    }
-                    item(key = "pinned_row") {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(pinnedFolders, key = { it.id }) { pinned ->
-                                PinnedFolderChip(
-                                    folder = pinned,
-                                    onClick = { onPinnedFolderClick(pinned) }
-                                )
+                    if (isAtRoot && pinnedFolders.isNotEmpty()) {
+                        item(key = "pin_header", span = { GridItemSpan(maxLineSpan) }) {
+                            SectionHeader("Pinned Folders")
+                        }
+                        item(key = "pin_row", span = { GridItemSpan(maxLineSpan) }) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                items(pinnedFolders, key = { it.id }) { pinned ->
+                                    PinnedFolderChip(
+                                        folder = pinned,
+                                        onClick = { onPinnedFolderClick(pinned) },
+                                    )
+                                }
                             }
                         }
-                        Spacer(Modifier.height(8.dp))
                     }
-                }
-
-                // ── File list ──────────────────────────────────────────────
-                // Render only folders + videos. The repository deliberately also
-                // returns `.srt` files in `s.files` so the player can auto-attach
-                // an external subtitle that lives next to the video — but those
-                // sidecar files have no business taking up space in the user-
-                // facing browse list. We pass the unfiltered `s.files` as the
-                // sibling argument to onFileClick so the auto-attach lookup
-                // still has access to the subtitles.
-                val visibleFiles = s.files.filter { it.isFolder || it.isVideo }
-                if (visibleFiles.isEmpty()) {
-                    item(key = "empty") {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 64.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextMuted, modifier = Modifier.size(64.dp))
-                            Spacer(Modifier.height(12.dp))
-                            Text("No videos in this folder", color = TextMuted)
+                    if (visibleFiles.isEmpty()) {
+                        item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 64.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextMuted, modifier = Modifier.size(64.dp))
+                                Spacer(Modifier.height(12.dp))
+                                Text("No videos in this folder", color = TextMuted)
+                            }
                         }
-                    }
-                } else {
-                    item(key = "files_header") {
-                        Spacer(Modifier.height(4.dp))
-                    }
-                    items(visibleFiles, key = { it.id }) { file ->
-                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 3.dp)) {
-                            FileItem(
-                                file = file,
+                    } else {
+                        items(
+                            items = visibleFiles,
+                            key = { it.id },
+                        ) { file ->
+                            if (file.isFolder) {
+                                LaunchedEffect(file.id) { onEnsureFolderThumbnails(file.id) }
+                            }
+                            // Subtitle composition mirrors the list rows so
+                            // toggling layout doesn't change what info shows.
+                            val subtitle = buildString {
+                                if (file.isVideo) {
+                                    file.formattedDuration?.let { append(it) }
+                                    if (file.formattedSize.isNotEmpty()) {
+                                        if (isNotEmpty()) append("  ·  ")
+                                        append(file.formattedSize)
+                                    }
+                                } else if (file.isFolder) {
+                                    val childCount = folderThumbnails[file.id]?.size
+                                    if (childCount != null && childCount > 0) {
+                                        append("$childCount video${if (childCount != 1) "s" else ""}")
+                                    } else {
+                                        append("Folder")
+                                    }
+                                }
+                            }
+                            MediaGridCard(
+                                title = file.name,
+                                subtitle = subtitle,
+                                progressFraction = if (file.isVideo) progressFractionFor(file, positions) else 0f,
+                                qualityLabel = if (file.isVideo) file.qualityLabel else null,
                                 isPinned = pinnedFolders.any { it.id == file.id },
-                                isDownloaded = downloadedFileIds.contains(file.id),
-                                isDownloading = downloadingFileIds.contains(file.id),
                                 onClick = { onFileClick(file, s.files) },
                                 onLongClick = { if (file.isFolder) onTogglePin(file) },
-                                onDownload = { onDownload(file) },
+                                thumbnail = {
+                                    when {
+                                        file.isFolder -> {
+                                            val thumbs = folderThumbnails[file.id]
+                                            if (thumbs.isNullOrEmpty()) {
+                                                EmptyFolderThumbnail(modifier = Modifier.fillMaxSize())
+                                            } else {
+                                                CloudFolderCollageThumbnail(
+                                                    childThumbnailUrls = thumbs,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                )
+                                            }
+                                        }
+                                        file.isVideo -> {
+                                            CloudFileThumbnail(
+                                                file = file,
+                                                sizeHintPx = 400,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        }
+                                        else -> EmptyFolderThumbnail(modifier = Modifier.fillMaxSize())
+                                    }
+                                },
                             )
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    // ── Continue Watching carousel ─────────────────────────────
+                    if (isAtRoot && recentlyWatched.isNotEmpty()) {
+                        item(key = "continue_watching_header") {
+                            SectionHeader("Continue Watching")
+                        }
+                        item(key = "continue_watching_row") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(recentlyWatched, key = { it.fileId }) { entry ->
+                                    WatchCard(entry = entry, onClick = { onWatchEntryClick(entry) })
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+
+                    // ── Pinned Folders row ─────────────────────────────────────
+                    if (isAtRoot && pinnedFolders.isNotEmpty()) {
+                        item(key = "pinned_header") {
+                            SectionHeader("Pinned Folders")
+                        }
+                        item(key = "pinned_row") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(pinnedFolders, key = { it.id }) { pinned ->
+                                    PinnedFolderChip(
+                                        folder = pinned,
+                                        onClick = { onPinnedFolderClick(pinned) }
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+
+                    if (visibleFiles.isEmpty()) {
+                        item(key = "empty") {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 64.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextMuted, modifier = Modifier.size(64.dp))
+                                Spacer(Modifier.height(12.dp))
+                                Text("No videos in this folder", color = TextMuted)
+                            }
+                        }
+                    } else {
+                        item(key = "files_header") {
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        items(visibleFiles, key = { it.id }) { file ->
+                            // Kick the lazy folder-thumbnail fetch as the row enters
+                            // composition so the collage populates as the user
+                            // scrolls. Idempotent — the VM only fires one network
+                            // call per folder per session.
+                            if (file.isFolder) {
+                                LaunchedEffect(file.id) { onEnsureFolderThumbnails(file.id) }
+                            }
+                            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                                FileItem(
+                                    file = file,
+                                    isPinned = pinnedFolders.any { it.id == file.id },
+                                    isDownloaded = downloadedFileIds.contains(file.id),
+                                    isDownloading = downloadingFileIds.contains(file.id),
+                                    progressFraction = progressFractionFor(file, positions),
+                                    folderChildThumbnails = if (file.isFolder) folderThumbnails[file.id] else null,
+                                    onClick = { onFileClick(file, s.files) },
+                                    onLongClick = { if (file.isFolder) onTogglePin(file) },
+                                    onDownload = { onDownload(file) },
+                                )
+                            }
                         }
                     }
                 }
@@ -450,6 +622,8 @@ private fun SearchResultsContent(
     recentSearches: List<String>,
     downloadedFileIds: Set<String>,
     downloadingFileIds: Set<String>,
+    positions: Map<String, Long>,
+    viewMode: String,
     onRecentClick: (String) -> Unit,
     onRecentRemove: (String) -> Unit,
     onClearRecents: () -> Unit,
@@ -513,6 +687,48 @@ private fun SearchResultsContent(
                     Spacer(Modifier.height(12.dp))
                     Text("No videos found for \"$query\"", color = TextMuted)
                 }
+            } else if (viewMode == "GRID") {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 168.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    item(key = "result_count", span = { GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            "${searchState.files.size} result${if (searchState.files.size == 1) "" else "s"}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextMuted,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+                    items(items = searchState.files, key = { it.id }) { file ->
+                        val subtitle = buildString {
+                            if (file.isVideo) {
+                                file.formattedDuration?.let { append(it) }
+                                if (file.formattedSize.isNotEmpty()) {
+                                    if (isNotEmpty()) append("  ·  ")
+                                    append(file.formattedSize)
+                                }
+                            }
+                        }
+                        MediaGridCard(
+                            title = file.name,
+                            subtitle = subtitle,
+                            progressFraction = if (file.isVideo) progressFractionFor(file, positions) else 0f,
+                            qualityLabel = if (file.isVideo) file.qualityLabel else null,
+                            onClick = { onVideoClick(file) },
+                            thumbnail = {
+                                if (file.isVideo) {
+                                    CloudFileThumbnail(file = file, sizeHintPx = 400, modifier = Modifier.fillMaxSize())
+                                } else {
+                                    EmptyFolderThumbnail(modifier = Modifier.fillMaxSize())
+                                }
+                            },
+                        )
+                    }
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -533,6 +749,11 @@ private fun SearchResultsContent(
                             isPinned = false,
                             isDownloaded = downloadedFileIds.contains(file.id),
                             isDownloading = downloadingFileIds.contains(file.id),
+                            progressFraction = progressFractionFor(file, positions),
+                            // Search results don't fan out to a folder-listing
+                            // network call per row — leaving collage data null
+                            // falls back to the empty-folder thumbnail.
+                            folderChildThumbnails = null,
                             onClick = { onVideoClick(file) },
                             onLongClick = {},
                             // Search results now expose the same per-row download
@@ -619,7 +840,6 @@ private fun SectionHeader(title: String) {
 @Composable
 private fun WatchCard(entry: WatchEntry, onClick: () -> Unit) {
     val progress = if (entry.durationMs > 0) entry.positionMs.toFloat() / entry.durationMs else 0f
-    val remaining = entry.durationMs - entry.positionMs
 
     Card(
         modifier = Modifier
@@ -629,7 +849,8 @@ private fun WatchCard(entry: WatchEntry, onClick: () -> Unit) {
         colors = CardDefaults.cardColors(containerColor = CardSurface)
     ) {
         Column {
-            // Thumbnail placeholder
+            // 16:9 thumbnail with a play-icon overlay so the card still
+            // reads as "video" even before Coil resolves the bitmap.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -637,21 +858,32 @@ private fun WatchCard(entry: WatchEntry, onClick: () -> Unit) {
                     .background(AccentPrimary.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
+                val link = entry.thumbnailLink?.let { withDriveSize(it, 320) }
+                if (link != null) {
+                    AsyncImage(
+                        model = link,
+                        contentDescription = entry.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                }
+                // Always render the play icon — it sits on top of the bitmap
+                // when one resolves, and on the tinted box otherwise.
                 Icon(
                     Icons.Default.PlayCircleOutline,
                     contentDescription = null,
-                    tint = AccentPrimary.copy(alpha = 0.7f),
+                    tint = Color.White.copy(alpha = if (link != null) 0.85f else 0.6f),
                     modifier = Modifier.size(40.dp)
                 )
             }
-            // Progress bar
+            // Watch-progress bar — flush against the thumbnail so it reads as
+            // a single visual unit (matches VLC mobile's tile design).
             LinearProgressIndicator(
                 progress = { progress.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().height(2.dp),
                 color = AccentPrimary,
-                trackColor = TextMuted.copy(alpha = 0.3f)
+                trackColor = Color.White.copy(alpha = 0.18f),
             )
-            // Title and time remaining
             Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 Text(
                     entry.title,
@@ -699,6 +931,8 @@ private fun FileItem(
     isPinned: Boolean,
     isDownloaded: Boolean,
     isDownloading: Boolean = false,
+    progressFraction: Float = 0f,
+    folderChildThumbnails: List<String>? = null,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onDownload: (() -> Unit)? = null,
@@ -729,13 +963,6 @@ private fun FileItem(
         )
     }
 
-    val (icon, iconColor) = when {
-        file.isFolder -> Icons.Default.Folder to AccentSecondary
-        file.isVideo  -> Icons.Default.VideoFile to AccentPrimary
-        file.isSrt    -> Icons.Default.Subtitles to TextMuted
-        else          -> Icons.Default.InsertDriveFile to TextMuted
-    }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -746,20 +973,73 @@ private fun FileItem(
                 onClick = onClick,
                 onLongClick = { if (file.isFolder) showPinDialog = true }
             )
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(iconColor.copy(alpha = 0.15f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+        // Leading 96x54 thumbnail. Folders draw a 2x2 collage from the
+        // resolved child thumbnails (null = not fetched yet → empty-state
+        // tile so the row geometry is stable). Video files draw their own
+        // Drive thumbnail with the quality chip + watch-progress overlay.
+        Box(modifier = Modifier.size(width = 96.dp, height = 54.dp)) {
+            when {
+                file.isFolder -> {
+                    if (folderChildThumbnails == null || folderChildThumbnails.isEmpty()) {
+                        EmptyFolderThumbnail(modifier = Modifier.fillMaxSize())
+                    } else {
+                        CloudFolderCollageThumbnail(
+                            childThumbnailUrls = folderChildThumbnails,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+                file.isVideo -> {
+                    CloudFileThumbnail(
+                        file = file,
+                        sizeHintPx = 220, // list mode uses the smaller variant
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    file.qualityLabel?.let { label ->
+                        QualityChip(
+                            text = label,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(4.dp),
+                        )
+                    }
+                    if (progressFraction > 0f) {
+                        LinearProgressIndicator(
+                            progress = { progressFraction },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(2.dp),
+                            color = AccentPrimary,
+                            trackColor = Color.White.copy(alpha = 0.18f),
+                        )
+                    }
+                }
+                else -> {
+                    // Subtitles or unknown formats — keep a small icon tile so
+                    // the row still has a visual anchor.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(CardSurface),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (file.isSrt) Icons.Default.Subtitles else Icons.Default.InsertDriveFile,
+                            contentDescription = null,
+                            tint = TextMuted,
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
+                }
+            }
         }
 
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -770,22 +1050,34 @@ private fun FileItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (file.formattedSize.isNotEmpty() || file.modifiedTime != null || file.owners?.isNotEmpty() == true) {
+            // Subtitle line. For videos: duration · size · owner (matches the
+            // local browser order). For folders / SRTs: original size · date
+            // · owner combo so we still surface useful Drive metadata.
+            val subtitle = buildString {
+                if (file.isVideo) {
+                    file.formattedDuration?.let { append(it) }
+                }
+                if (file.formattedSize.isNotEmpty()) {
+                    if (isNotEmpty()) append("  ·  ")
+                    append(file.formattedSize)
+                }
+                if (!file.isVideo && file.modifiedTime != null) {
+                    if (isNotEmpty()) append("  ·  ")
+                    append(file.modifiedTime.take(10))
+                }
+                if (file.owners?.isNotEmpty() == true) {
+                    if (isNotEmpty()) append("  ·  ")
+                    append(file.owners.first().displayName ?: file.owners.first().emailAddress)
+                }
+            }
+            if (subtitle.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    buildString {
-                        if (file.formattedSize.isNotEmpty()) append(file.formattedSize)
-                        if (file.modifiedTime != null) {
-                            if (isNotEmpty()) append("  ·  ")
-                            append(file.modifiedTime.take(10))
-                        }
-                        if (file.owners?.isNotEmpty() == true) {
-                            if (isNotEmpty()) append("  ·  ")
-                            append(file.owners.first().displayName ?: file.owners.first().emailAddress)
-                        }
-                    },
+                    subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -843,6 +1135,41 @@ private fun FileItem(
             )
         }
     }
+}
+
+// ── Shared per-row helpers ────────────────────────────────────────────────────
+
+@Composable
+internal fun QualityChip(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.65f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/**
+ * Watched-fraction (0f..1f) for a Drive file. Falls back to 0 when no
+ * position is saved, the saved position is below the 5s "started watching"
+ * threshold, or the file has no `videoMediaMetadata.durationMillis`.
+ */
+internal fun progressFractionFor(file: DriveFile, positions: Map<String, Long>): Float {
+    val saved = positions[file.id] ?: return 0f
+    if (saved <= 5_000L) return 0f
+    val dur = file.durationMs ?: return 0f
+    if (dur <= 0L) return 0f
+    return (saved.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
 }
 
 // ── Account dropdown (unchanged) ──────────────────────────────────────────────
